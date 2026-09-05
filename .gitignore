@@ -1,0 +1,38 @@
+.DS_Store
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+node_modules/
+frontend/dist/
+frontend/coverage/
+
+# Raw or locally transformed profile datasets must stay outside Git.
+data/
+dataset/
+datasets/
+*.jsonl
+*.ndjson
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+/secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Private and raw datasets
+/data/*
+!/data/.gitkeep
+/dataset/
+/datasets/
+*.jsonl
+*.ndjson
