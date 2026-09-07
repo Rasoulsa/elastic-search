@@ -129,6 +129,24 @@ docker compose run --rm frontend npm run build
 
 The explicit type-check uses the repository's TypeScript project references with `tsc -b`.
 
+The focused authentication suite can be run with:
+
+```bash
+docker compose run --rm frontend npm test -- --run \
+  src/api/client.test.ts src/authentication.test.tsx
+```
+
+These tests mock `fetch` at the network boundary while retaining the real router, authentication
+provider, TanStack Query client, and browser `sessionStorage`. They cover route guards and loading,
+login and registration behavior, token placement, startup refresh plus `/me/`, protected request
+headers, one-refresh/one-retry behavior, shared concurrent refresh, safe malformed errors, logout
+cache clearing, and late refresh or `/me/` responses after logout.
+
+For sanitized browser verification, use a synthetic local account and inspect only route changes,
+status messages, and the presence or absence of storage keys. Do not copy token values into notes,
+URLs, console output, screenshots, or documentation. Verify that reload uses the refresh token to
+recover `/me/`, and that closing the tab or browser session removes the `sessionStorage` session.
+
 ## Compose and health checks
 
 Validate the Compose file without starting services. Compose requires an explicitly supplied

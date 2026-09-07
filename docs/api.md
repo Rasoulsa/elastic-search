@@ -6,6 +6,11 @@ The local backend base URL is `http://localhost:8000`. API routes use the `/api/
 
 ## Authentication
 
+The browser client reads the backend origin from `VITE_API_BASE_URL`. Public registration and token
+requests do not include an `Authorization` header. The current-user request and future protected
+profile requests use the in-memory access token. A protected 401 can trigger one shared refresh and
+one retry; the refresh endpoint never refreshes itself recursively.
+
 ### Register
 
 `POST /api/v1/auth/register/` is public and creates a Django user. It does not issue tokens.
@@ -96,6 +101,11 @@ Response (`200 OK`):
   "email": "reviewer@example.com"
 }
 ```
+
+The current frontend logout has no corresponding backend endpoint. It removes the memory-only access
+token, the normally `sessionStorage`-backed refresh token, current-user state, and authenticated query
+cache. Logout does not revoke already-issued JWTs; previously issued access and refresh JWTs remain
+valid server-side until expiration.
 
 ## Public and protected routes
 
