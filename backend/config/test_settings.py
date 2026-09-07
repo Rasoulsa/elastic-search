@@ -1,3 +1,9 @@
+import os
+import secrets
+
+# Isolated test runs use an ephemeral non-production signing key unless one is supplied explicitly.
+os.environ.setdefault("DJANGO_SECRET_KEY", secrets.token_urlsafe(64))
+
 from .settings import *  # noqa: F403
 
 DATABASES = {  # noqa: F405

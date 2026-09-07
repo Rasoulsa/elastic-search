@@ -33,23 +33,25 @@ services:
     build:
       context: ./backend
     environment:
-      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-local-development-only}
+      DJANGO_SECRET_KEY: "${DJANGO_SECRET_KEY:?DJANGO_SECRET_KEY must be set to a non-empty value}"
       DJANGO_DEBUG: ${DJANGO_DEBUG:-true}
       DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1,backend}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173}
       POSTGRES_DB: ${POSTGRES_DB:-profiles}
       POSTGRES_USER: ${POSTGRES_USER:-profiles}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-profiles}
       POSTGRES_HOST: db
       POSTGRES_PORT: 5432
       ELASTICSEARCH_URL: http://elasticsearch:9200
+      ELASTICSEARCH_REQUEST_TIMEOUT: ${ELASTICSEARCH_REQUEST_TIMEOUT:-10}
+      ELASTICSEARCH_INDEX: ${ELASTICSEARCH_INDEX:-linkedin_profiles_v1}
     volumes:
       - ./backend:/app
+      - ./data:/data:ro
     ports:
       - "8000:8000"
     depends_on:
       db:
-        condition: service_healthy
-      elasticsearch:
         condition: service_healthy
     healthcheck:
       test:

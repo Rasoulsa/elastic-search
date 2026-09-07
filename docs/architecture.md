@@ -1,39 +1,43 @@
 # Architecture
 
-## Purpose and Day 1 scope
+## Purpose and current scope
 
-This repository is the platform foundation for a LinkedIn profile search application. Day 1
-establishes the Django and React applications, the relational profile model foundation, Docker
-Compose services, and unauthenticated health endpoints. It does not implement profile ingestion,
-indexing, searching, or user authentication.
+This repository is the platform foundation for a LinkedIn profile search application. It includes
+an explicit, repeatable CSV importer, JWT authentication with public API documentation, an
+explicitly rebuildable Elasticsearch profile index, an authenticated search API, and an
+authenticated PostgreSQL profile-detail API. The React search UI is deferred to Day 3.
 
 ## Application architecture
 
-The React and TypeScript frontend is served by Vite and is the client for a future Django REST API.
-The Django backend currently exposes only health endpoints and owns the initial relational model
-definitions. PostgreSQL is the planned canonical source of truth. Elasticsearch is a derived search
-index that will be rebuilt explicitly from PostgreSQL; it is running in Compose but is not integrated
-with Django in Day 1.
+The React and TypeScript frontend is served by Vite and is the client for the Django REST API. The
+Django backend exposes health, authentication, and API documentation endpoints and owns the
+relational user and profile data. PostgreSQL is the canonical source of truth. Elasticsearch is a
+derived search index rebuilt explicitly from PostgreSQL. Profile writes and imports do not contact
+Elasticsearch.
 
 ```mermaid
 flowchart LR
     Browser[React + Vite frontend] -->|HTTP| API[Django REST API]
-    API -->|planned canonical persistence| DB[(PostgreSQL)]
-    DB -.->|planned explicit reindex| ES[(Elasticsearch)]
+    API -->|profile detail| DB[(PostgreSQL)]
+    API -->|profile search| ES
+    DB -->|explicit rebuild command| ES[(Elasticsearch)]
 ```
 
 ## Current service responsibilities
 
 - `frontend` runs the React, TypeScript, and Vite application shell.
-- `backend` runs Django and Django REST Framework, including the health endpoints and profile model
-  foundation.
+- `backend` runs Django and Django REST Framework, including health, JWT authentication,
+  OpenAPI/Swagger documentation, Elasticsearch profile search, and PostgreSQL profile detail.
 - `db` runs PostgreSQL 16, where application profile data will be canonical.
-- `elasticsearch` runs Elasticsearch 8 as infrastructure for the future derived search index. No
-  Django client, mappings, or indexing code exists yet.
+- `elasticsearch` runs Elasticsearch 8.17 and stores the derived `linkedin_profiles_v1` index.
+  Django integrates through one small gateway for index lifecycle, bulk operations, and search.
 
 ## Data-model foundation
 
-- A `Profile` represents a person and has a unique public identifier.
+- A `Profile` represents a person and has a unique public identifier. LinkedIn ID, username, and
+  canonical profile URL are nullable dedicated identity aliases, each unique when present.
+- `Profile.raw_payload` preserves the original source columns for diagnostics and future mapping
+  work. Identity resolution never queries this JSON field.
 - A `Profile` has many `Skill` records through a many-to-many relationship. A `Skill` can belong to
   many profiles and has a unique name.
 - A `Profile` has many `Experience` records. Each experience belongs to one profile and is deleted
@@ -42,7 +46,9 @@ flowchart LR
   with its profile.
 
 The model includes basic identity, contact-free profile, experience, education, and timestamp
-fields. There is no import or search API yet.
+fields. Experience and education preserve zero-based source order with a unique position per
+profile. Both import and index rebuild commands are explicit. Search reads Elasticsearch; profile
+detail reads the canonical PostgreSQL models with bounded relation prefetching.
 
 ## Health endpoint semantics
 
@@ -52,31 +58,77 @@ fields. There is no import or search API yet.
   connectivity check returns `200` with `{"status":"ok","database":"ok"}`.
 - A Django `DatabaseError` returns a stable `503` response with
   `{"status":"unavailable","database":"unavailable"}`. Exception details are not returned.
-- Readiness is limited to PostgreSQL connectivity for Day 1. It does not check migration status or
+- Readiness is limited to PostgreSQL connectivity. It does not check migration status or
   Elasticsearch availability.
+
+## Authentication and API documentation
+
+- `POST /api/v1/auth/register/` creates a user with Django's default user model and never issues a
+  token.
+- `POST /api/v1/auth/token/` and `POST /api/v1/auth/token/refresh/` are standard Simple JWT
+  endpoints. Access tokens last 15 minutes and refresh tokens last 7 days. Refresh rotation and
+  token blacklisting are disabled; tokens are not stored in the database.
+- `GET /api/v1/auth/me/` requires a valid `Authorization: Bearer <access-token>` header and returns
+  only the current user's id, username, and email.
+- The default API permission is authenticated access. Health, registration, token, schema, and
+  Swagger endpoints explicitly remain public.
+- `GET /api/schema/` serves the OpenAPI schema and `GET /api/docs/` serves Swagger UI. CORS allows
+  only the origins listed in `CORS_ALLOWED_ORIGINS`; credentials are disabled.
 
 ## Docker Compose topology
 
 Compose runs `db`, `elasticsearch`, `backend`, and `frontend`. The backend uses the Compose service
 hostnames `db` and `elasticsearch`; the frontend calls the backend through the host-published port.
-The backend waits for healthy database and Elasticsearch containers before starting, while the
-frontend waits for the backend health check. PostgreSQL and Elasticsearch data use named volumes.
+The backend requires a healthy PostgreSQL container but has no startup dependency on Elasticsearch,
+while the frontend waits for the backend health check. Explicit indexing commands and profile search
+requests require Elasticsearch. PostgreSQL and Elasticsearch data use named volumes.
 
-## Planned Day 2 interfaces
-
-Day 2 is expected to add these explicit Django management commands:
+## Import interface
 
 ```bash
-python manage.py import_profiles --path /absolute/path/to/profiles.json
-python manage.py rebuild_profile_index
+python manage.py import_profiles --path /data/profiles.txt
 ```
 
-These commands are documented interfaces only; they are not implemented or runnable in the Day 1
-foundation. Import will establish PostgreSQL data, and reindexing will rebuild the derived
-Elasticsearch representation explicitly.
+The importer requires the exact 77-column CSV header, skips malformed-width records without repair,
+and reports logical/physical row ranges using reason codes. It parses and normalizes every accepted
+row before consolidating duplicates through all canonical aliases. Only then does one transaction
+persist one final plan per profile. Tri-state values distinguish valid values, explicit empties, and
+invalid input. Complete valid nested lists synchronize source positions and remove stale rows;
+partial lists preserve invalid/unmatched positions, while invalid top-level collections are kept
+unchanged. Diff-aware writes preserve unchanged profile timestamps and retained child primary keys.
+Database counters report actual creates, updates, unchanged rows, and deletes.
+
+## Search-index boundary
+
+`apps/search` owns the Elasticsearch mapping, deterministic document projection, client gateway,
+and management commands. `create_profile_index` idempotently creates the empty versioned index.
+`rebuild_profile_index` deletes and recreates it, iterates PostgreSQL profiles with prefetched
+relations, bulk-indexes bounded batches using stable profile primary-key IDs, and refreshes once on
+success. This simple replacement removes stale documents but makes the index temporarily unavailable.
+Failures are translated to stable command errors; raw Elasticsearch responses and profile values are
+not printed. See `docs/search-index.md` for the exact contract.
+
+The HTTP search path keeps four small responsibilities separate. DRF validates and trims input; a
+pure query builder creates the understandable Elasticsearch request; the existing gateway executes
+that request; and a service translates only allowlisted source fields and normalized facet buckets
+into the public API. One request produces both hits and all five facets. Connection, timeout,
+transport, missing-index, and malformed-response failures become the stable `search_unavailable`
+503 without a PostgreSQL fallback. Internally created Elasticsearch clients close on every path.
+
+`GET /api/v1/profiles/{id}/` does not pass through this boundary. It selects the profile from
+PostgreSQL and prefetches skills, experiences, and education in three deterministic queries. It
+therefore remains operational during an Elasticsearch outage and excludes the raw import payload
+and importer bookkeeping from serialization. Its scalar company, industry, and country values are
+explicitly allowlisted from imported payload keys because dedicated relational columns do not yet
+exist; arbitrary nested payload values and contact fields are never exposed.
+
+No Django signals or application-startup hooks synchronize profile writes. This keeps PostgreSQL
+writes independent from Elasticsearch and makes index state explicitly reproducible and observable.
+Backend startup, migrations, imports, authentication, profile detail, and ordinary tests remain
+available when Elasticsearch is stopped. The readiness endpoint therefore remains PostgreSQL-only.
 
 ## Intentionally deferred
 
-JWT authentication, dataset parsing and import, Elasticsearch clients and mappings, index
-rebuilding, the search API, protected API access, and the complete profile search UI are deferred to
-later slices. Django signals will not be used for PostgreSQL-to-Elasticsearch indexing.
+The React authentication and profile-search UI are deferred to Day 3. Zero-downtime alias rotation,
+incremental synchronization, autocomplete, fuzzy or semantic search, and saved searches remain
+intentionally outside the assignment-sized scope.
