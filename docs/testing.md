@@ -142,6 +142,38 @@ login and registration behavior, token placement, startup refresh plus `/me/`, p
 headers, one-refresh/one-retry behavior, shared concurrent refresh, safe malformed errors, logout
 cache clearing, and late refresh or `/me/` responses after logout.
 
+The focused frontend search suites can be run with:
+
+```bash
+docker compose run --rm frontend npm test -- --run \
+  src/search/searchState.test.ts \
+  src/api/profiles.test.ts \
+  src/pages/SearchPage.test.tsx \
+  src/pages/ProfileDetailPage.test.tsx
+```
+
+The URL utility tests cover deterministic ordering, repeated filters, blank removal, the bounded
+Unicode comparison policy, unknown-parameter removal, pagination normalization, criteria/page
+transitions, and token-free query keys. API tests exercise runtime validation for all important
+search, facet, result, detail, experience, and education structures, including pagination arithmetic,
+request/response pagination consistency, legitimate out-of-range responses, exact repeated-parameter
+URLs, profile IDs, and abort-signal forwarding.
+
+Page integration tests retain the real router, authentication provider and guards, QueryClient, and
+session lifecycle. They mock only the typed profile API boundary and the narrow startup authentication
+requests. Search coverage includes initial match-all, restored URLs, explicit keyword/filter
+submission, all filter categories, repeated skills and job titles, clear, navigation restoration,
+facets and counts, selected values absent from facets, safe result rendering, count pluralization,
+loading, empty/error/retry states, pagination, preserved return URLs, and token-free cache keys.
+Detail coverage includes loading, public and nested rendering, `404`, network/server/malformed errors,
+bounded retry boundaries, safe and unsafe external URLs, return validation, malformed IDs, abort
+handling, and exclusion of internal fields. Authentication coverage verifies that logout removes
+actual search and profile-detail query entries and does not expose them to a later session.
+
+Search page coverage also verifies delayed superseded requests, per-request abort signals, safe
+out-of-range correction with criteria preservation, no invalid page flash, and correction-loop
+termination.
+
 For sanitized browser verification, use a synthetic local account and inspect only route changes,
 status messages, and the presence or absence of storage keys. Do not copy token values into notes,
 URLs, console output, screenshots, or documentation. Verify that reload uses the refresh token to

@@ -306,7 +306,7 @@ test("startup refreshes once and then loads the current user", async () => {
   renderRoute("/search");
 
   expect(await screen.findByText("Signed in as reviewer")).toBeInTheDocument();
-  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("/api/v1/auth/"))).toHaveLength(2);
   expect(String(fetchMock.mock.calls[0][0])).toContain("/api/v1/auth/token/refresh/");
   expect(String(fetchMock.mock.calls[1][0])).toContain("/api/v1/auth/me/");
   const meHeaders = fetchMock.mock.calls[1][1]?.headers as Headers;
@@ -355,7 +355,7 @@ test("StrictMode startup keeps refresh and current-user loading single-flight", 
   );
 
   expect(await screen.findByText("Signed in as reviewer")).toBeInTheDocument();
-  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("/api/v1/auth/"))).toHaveLength(2);
 });
 
 test("a late login response after logout cannot restore authentication", async () => {
@@ -407,7 +407,11 @@ test("logout clears tokens, current user, and query state", async () => {
       jsonResponse({ id: 7, username: "reviewer", email: "reviewer@example.com" }),
     );
   const queryClient = new QueryClient();
-  queryClient.setQueryData(["protected-profiles"], [{ id: 1 }]);
+  const searchKey = ["profile-search", "q=previous-user&page=1&page_size=20"];
+  const detailKey = ["profile-detail", 7];
+  queryClient.setQueryData(searchKey, { results: [{ id: 7, full_name: "Previous User" }] });
+  queryClient.setQueryData(detailKey, { id: 7, full_name: "Previous User" });
+  queryClient.setQueryData(["public-example"], { value: "public cache" });
   const { router } = renderRoute("/search", queryClient);
   const user = userEvent.setup();
   await screen.findByText("Signed in as reviewer");
@@ -415,11 +419,32 @@ test("logout clears tokens, current user, and query state", async () => {
   await user.click(screen.getByRole("button", { name: "Sign out" }));
 
   expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+  const callsAfterLogout = fetchMock.mock.calls.length;
   expect(router.state.location.pathname).toBe("/login");
   expect(tokenStore.getAccessToken()).toBeNull();
   expect(tokenStore.getRefreshToken()).toBeNull();
-  expect(queryClient.getQueryData(["protected-profiles"])).toBeUndefined();
+  expect(queryClient.getQueryData(searchKey)).toBeUndefined();
+  expect(queryClient.getQueryData(detailKey)).toBeUndefined();
+  expect(queryClient.getQueryData(["public-example"])).toBeUndefined();
   expect(queryClient.getQueryData(CURRENT_USER_QUERY_KEY)).toBeUndefined();
+  const callsBeforeNextLogin = fetchMock.mock.calls.length;
+
+  fetchMock
+    .mockResolvedValueOnce(jsonResponse({ access: "next-access", refresh: "next-refresh" }))
+    .mockResolvedValueOnce(
+      jsonResponse({ id: 8, username: "next-reviewer", email: "next@example.com" }),
+    );
+  await user.type(screen.getByLabelText("Username"), "next-reviewer");
+  await user.type(screen.getByLabelText("Password"), "next-password");
+  await user.click(screen.getByRole("button", { name: "Sign in" }));
+  expect(await screen.findByText("Signed in as next-reviewer")).toBeInTheDocument();
+  expect(queryClient.getQueryData(searchKey)).toBeUndefined();
+  expect(queryClient.getQueryData(detailKey)).toBeUndefined();
+  expect(
+    fetchMock.mock.calls
+      .slice(callsAfterLogout, callsBeforeNextLogin)
+      .some(([url]) => String(url).includes("/profiles/")),
+  ).toBe(false);
 });
 
 test("logout during an in-flight refresh cannot restore the session", async () => {

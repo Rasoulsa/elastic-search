@@ -32,6 +32,20 @@ describe("ApiClient authentication", () => {
     expect(headers.get("Authorization")).toBe("Bearer access-one");
   });
 
+  test("joins a configured base URL without adding a double slash", async () => {
+    const { fetchFn, tokens } = setup();
+    const client = new ApiClient({
+      baseUrl: "https://api.example/",
+      fetchFn,
+      tokens,
+    });
+    fetchFn.mockResolvedValue(jsonResponse({ ok: true }));
+
+    await client.protectedRequest("/api/v1/profiles/7/");
+
+    expect(fetchFn.mock.calls[0][0]).toBe("https://api.example/api/v1/profiles/7/");
+  });
+
   test("one 401 performs one refresh and retries once", async () => {
     const { client, fetchFn, tokens } = setup();
     fetchFn

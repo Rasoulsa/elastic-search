@@ -162,5 +162,6 @@ response shape, return `503` with `code=search_unavailable`. There is no Postgre
 The PostgreSQL-backed profile-detail endpoint is independent and remains available during this
 failure. Elasticsearch clients created for an HTTP search are closed after both success and failure.
 
-The authenticated search HTTP endpoint is implemented. The React profile-search UI remains deferred
-to Day 3.
+The authenticated search HTTP endpoint and the authenticated React search and profile-detail
+experience were implemented on Day 3. PostgreSQL remains the canonical source of profile data, while
+Elasticsearch remains the derived search index.

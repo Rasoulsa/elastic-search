@@ -5,8 +5,8 @@
 This repository is the platform foundation for a LinkedIn profile search application. It includes
 an explicit, repeatable CSV importer, JWT authentication with public API documentation, an
 explicitly rebuildable Elasticsearch profile index, an authenticated search API, an authenticated
-PostgreSQL profile-detail API, and a React authentication foundation. The profile search UI is
-deferred to Phase 3B.
+PostgreSQL profile-detail API, and a React frontend for authentication, URL-driven search, facets,
+pagination, and profile detail.
 
 ## Application architecture
 
@@ -26,8 +26,8 @@ flowchart LR
 
 ## Current service responsibilities
 
-- `frontend` runs the React, TypeScript, and Vite application shell, authentication routes, and the
-  protected search placeholder.
+- `frontend` runs the React, TypeScript, and Vite application shell, authentication routes,
+  protected search, and protected profile detail.
 - `backend` runs Django and Django REST Framework, including health, JWT authentication,
   OpenAPI/Swagger documentation, Elasticsearch profile search, and PostgreSQL profile detail.
 - `db` runs PostgreSQL 16, where application profile data will be canonical.
@@ -88,6 +88,12 @@ tokens but does not revoke already-issued JWTs, which remain valid server-side u
 Production deployments should prefer secure HttpOnly cookies and server-side revocation; both are
 outside the current backend contract. See `docs/frontend-auth.md` for the complete frontend flow.
 
+The frontend treats canonical `/search` query parameters as the source of search state. Draft form
+controls write normalized criteria to the URL only on submission; TanStack Query keys and protected
+requests derive from that URL. Runtime guards validate the allowlisted search and detail response
+structures before rendering. Result links carry a validated local `/search` return destination to
+the PostgreSQL-backed detail page. See `docs/frontend-search.md` for the complete browser contract.
+
 ## Docker Compose topology
 
 Compose runs `db`, `elasticsearch`, `backend`, and `frontend`. The backend uses the Compose service
@@ -142,6 +148,6 @@ available when Elasticsearch is stopped. The readiness endpoint therefore remain
 
 ## Intentionally deferred
 
-The profile search form, results, facets, pagination, and detail UI are deferred to Phase 3B.
 Zero-downtime alias rotation, incremental synchronization, autocomplete, fuzzy or semantic search,
-and saved searches remain intentionally outside the assignment-sized scope.
+saved searches, profile editing, and administrative UI remain intentionally outside the
+assignment-sized scope.

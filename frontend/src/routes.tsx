@@ -3,7 +3,8 @@ import { Navigate, type RouteObject } from "react-router-dom";
 import { LoginPage } from "./pages/LoginPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 import { RegisterPage } from "./pages/RegisterPage";
-import { SearchPlaceholderPage } from "./pages/SearchPlaceholderPage";
+import { ProfileDetailPage } from "./pages/ProfileDetailPage";
+import { SearchPage } from "./pages/SearchPage";
 import { ProtectedRoute, PublicOnlyRoute, RootLayout } from "./RouteLayouts";
 
 export const appRoutes: RouteObject[] = [
@@ -21,7 +22,10 @@ export const appRoutes: RouteObject[] = [
       },
       {
         element: <ProtectedRoute />,
-        children: [{ path: "search", element: <SearchPlaceholderPage /> }],
+        children: [
+          { path: "search", element: <SearchPage /> },
+          { path: "profiles/:profileId", element: <ProfileDetailPage /> },
+        ],
       },
       { path: "*", element: <NotFoundPage /> },
     ],

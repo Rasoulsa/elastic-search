@@ -1,4 +1,4 @@
-import { safeDestination } from "./safeDestination";
+import { safeDestination, safeSearchDestination } from "./safeDestination";
 
 test.each([
   ["/search", "/search"],
@@ -16,4 +16,13 @@ test.each([
   [null, "/search"],
 ])("validates return destination %j", (value, expected) => {
   expect(safeDestination(value)).toBe(expected);
+});
+
+test.each([
+  ["/search?q=engineer", "/search?q=engineer"],
+  ["/login", "/search"],
+  ["/profiles/7", "/search"],
+  ["https://evil.example", "/search"],
+])("restricts profile return destinations to search URLs", (value, expected) => {
+  expect(safeSearchDestination(value)).toBe(expected);
 });

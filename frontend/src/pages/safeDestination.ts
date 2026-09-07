@@ -32,3 +32,13 @@ export function safeDestination(value: unknown): string {
     return "/search";
   }
 }
+
+export function safeSearchDestination(value: unknown): string {
+  const destination = safeDestination(value);
+  try {
+    const parsed = new URL(destination, window.location.origin);
+    return parsed.pathname === "/search" ? `${parsed.pathname}${parsed.search}${parsed.hash}` : "/search";
+  } catch {
+    return "/search";
+  }
+}

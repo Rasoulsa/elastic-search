@@ -11,8 +11,8 @@ Elasticsearch contains a derived, explicitly rebuildable profile index.
 - pytest, Ruff, Vitest, React Testing Library, and ESLint
 
 The Day 2 backend includes JWT authentication, API documentation, dataset import, Elasticsearch
-index lifecycle, authenticated profile search, and PostgreSQL profile detail. The frontend now
-includes the Day 3 authentication foundation; the profile search UI remains deferred to Phase 3B.
+index lifecycle, authenticated profile search, and PostgreSQL profile detail. The Day 3 frontend
+includes authentication, URL-driven profile search and facets, pagination, and profile detail.
 
 ## Run locally
 
@@ -48,10 +48,11 @@ The frontend is available at `http://localhost:5173`; the backend is available a
 - `GET /api/schema/` and `GET /api/docs/` for the public OpenAPI schema and Swagger UI
 
 Set `VITE_API_BASE_URL` to the backend origin used by the browser. It defaults to
-`http://localhost:8000` in the example and Compose configuration. The frontend routes are
-`/login`, `/register`, and the protected `/search` placeholder. See
+`http://localhost:8000` in the example and Compose configuration. The frontend routes are `/login`,
+`/register`, protected `/search`, and protected `/profiles/:profileId`. See
 [`docs/frontend-auth.md`](docs/frontend-auth.md) for the client authentication lifecycle and token
-storage policy.
+storage policy, and [`docs/frontend-search.md`](docs/frontend-search.md) for the browser search
+contract.
 
 The readiness endpoint runs a small PostgreSQL connectivity query. It does not check migration
 status or Elasticsearch, and it does not expose database exception details.

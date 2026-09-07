@@ -2,13 +2,13 @@
 
 ## Scope and routes
 
-The React frontend implements the authentication foundation against the existing Django JWT API.
-It does not implement profile search yet.
+The React frontend implements the Phase 3A authentication foundation against the existing Django
+JWT API. Phase 3B adds the authenticated profile search and profile-detail routes described below.
 
 - `/login` is public and redirects authenticated users to `/search`.
 - `/register` is public and redirects authenticated users to `/search`.
-- `/search` is a protected Phase 3B placeholder. Logged-out users are redirected to `/login`, with
-  the safe local destination preserved in router state.
+- `/search` and `/profiles/:profileId` are protected. Logged-out users are redirected to `/login`,
+  with the safe local path and query preserved in router state.
 - Unknown paths render a small not-found page.
 
 Route guards show a session-loading state until startup authentication resolves, so protected
@@ -78,7 +78,14 @@ It removes local access and refresh tokens, clears the current user, cancels que
 query cache, and navigates to `/login`. HttpOnly secure cookies and server-side token revocation are
 production hardening options outside this assignment's backend scope.
 
-## Deferred to Phase 3B
+## Search and detail navigation
 
-The `/search` page is intentionally a protected placeholder. Search inputs, result cards, facets,
-pagination, and profile detail remain deferred.
+The search and detail pages use the same protected API client and do not duplicate token refresh.
+Frontend search uses the authenticated API client. Logout remains client-side: it removes local
+tokens, clears the current user, cancels query work, clears the authenticated cache, and navigates to
+`/login`.
+Result links place the complete canonical `/search?...` return location in the detail URL. Detail
+passes it through the existing local-destination validator and additionally restricts it to the
+`/search` path before rendering Back to results. Missing, unsafe, and non-search values fall back to
+`/search`. Neither tokens nor authentication state are included in URLs or query keys. See
+`docs/frontend-search.md` for the search-state contract.

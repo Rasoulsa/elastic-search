@@ -218,6 +218,11 @@ Unavailable`):
 There is no PostgreSQL fallback and no internal hostname, index name, exception, or query in the
 response.
 
+The browser client represents filters with the same repeated parameters and sends explicit scalar
+`page` and `page_size` values. Its canonical URL omits default pagination, removes unknown
+parameters, and never includes authentication tokens. Successful payloads are runtime-checked before
+any results or facets render; malformed successes become stable recoverable client errors.
+
 ## Profile detail
 
 `GET /api/v1/profiles/{id}/` reads from PostgreSQL, the canonical source of truth. It remains
@@ -275,6 +280,11 @@ Response (`200 OK`):
 
 Unknown IDs return `404 Not Found`. The importer-owned canonical `public_identifier`, `raw_payload`,
 private source fields, timestamps, source ordering, and authentication data are excluded.
+
+The browser detail route is `/profiles/:profileId`. It rejects malformed IDs before requesting this
+endpoint, validates successful payloads, and renders only the documented public fields. Search links
+carry a validated local `/search` return URL; this frontend-only `return_to` parameter is never sent
+to the backend detail endpoint.
 
 ## Errors
 
