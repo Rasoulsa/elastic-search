@@ -2,7 +2,8 @@ from types import SimpleNamespace
 from unittest.mock import Mock, call, patch
 
 import pytest
-from elastic_transport import ConnectionError
+from elastic_transport import ConnectionError, ConnectionTimeout, TransportError
+from elasticsearch import ApiError, NotFoundError
 
 from apps.search.gateway import (
     BulkIndexError,
@@ -165,6 +166,61 @@ def test_gateway_translates_connection_errors_to_a_stable_error():
 
     with pytest.raises(SearchIndexError, match="^Elasticsearch is unavailable\\.$"):
         gateway.index_exists()
+
+
+def test_gateway_executes_search_against_the_configured_index():
+    client = Mock()
+    response_body = {"hits": {"total": {"value": 0}, "hits": []}}
+    client.search.return_value = SimpleNamespace(body=response_body)
+    gateway = ElasticsearchGateway(client, "linkedin_profiles_v1")
+    request = {
+        "query": {"match_all": {}},
+        "from": 0,
+        "size": 20,
+        "track_total_hits": True,
+    }
+
+    response = gateway.search(request)
+
+    assert response == response_body
+    client.search.assert_called_once_with(index="linkedin_profiles_v1", **request)
+
+
+@pytest.mark.parametrize(
+    ("exception_factory", "message"),
+    [
+        (
+            lambda: ConnectionError("private host connection failed"),
+            "Elasticsearch is unavailable.",
+        ),
+        (lambda: ConnectionTimeout("private host timed out"), "Elasticsearch is unavailable."),
+        (lambda: TransportError("private transport failure"), "Elasticsearch request failed."),
+        (
+            lambda: ApiError("private API failure", Mock(), {"error": "private"}),
+            "Elasticsearch request failed.",
+        ),
+        (
+            lambda: NotFoundError("private index missing", Mock(), {"error": "private"}),
+            "Elasticsearch request failed.",
+        ),
+    ],
+)
+def test_gateway_translates_expected_search_failures_to_stable_errors(exception_factory, message):
+    client = Mock()
+    client.search.side_effect = exception_factory()
+    gateway = ElasticsearchGateway(client, "linkedin_profiles_v1")
+
+    with pytest.raises(SearchIndexError, match=f"^{message}$"):
+        gateway.search({"query": {"match_all": {}}})
+
+
+def test_gateway_does_not_swallow_programming_errors():
+    client = Mock()
+    client.search.side_effect = ValueError("programming failure")
+    gateway = ElasticsearchGateway(client, "linkedin_profiles_v1")
+
+    with pytest.raises(ValueError, match="programming failure"):
+        gateway.search({"query": {"match_all": {}}})
 
 
 def test_gateway_closes_only_a_client_it_owns():

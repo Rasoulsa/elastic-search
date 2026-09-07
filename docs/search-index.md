@@ -17,9 +17,9 @@ Configuration is intentionally small:
 The Python client is constrained to Elasticsearch client 8.x, which is compatible with the Compose
 Elasticsearch 8.17 server. The dependency is restricted to the tested 8.17 minor line.
 
-Backend startup, migrations, profile imports, authentication, and ordinary backend tests require
-PostgreSQL but not Elasticsearch. Explicit index creation and rebuild commands require
-Elasticsearch; future search requests will require it too.
+Backend startup, migrations, profile imports, authentication, PostgreSQL profile detail, and ordinary
+backend tests require PostgreSQL but not a live Elasticsearch service. Explicit index commands and
+profile search require Elasticsearch.
 
 ## Explicit mapping
 
@@ -123,6 +123,44 @@ command exit non-zero. Fix the underlying issue and rerun the complete rebuild f
 recover.
 
 The readiness endpoint deliberately remains PostgreSQL-only. An Elasticsearch outage affects index
-lifecycle commands but does not change database readiness or profile ownership.
+lifecycle commands and search but does not change database readiness or profile ownership.
 
-The search HTTP endpoint and React profile-search UI remain deferred.
+## Search query contract
+
+`GET /api/v1/profiles/search/` is JWT-protected and executes one Elasticsearch request for results
+and facets. Its query builder is independently testable and uses only the committed fields above.
+
+- Blank `q` uses `match_all`. A present `q` uses AND `best_fields` multi-match with boosts
+  `full_name^4`, `job_title^4`, `job_titles^3`, `skills^3`, `company^2`, `industry^2`, then unboosted
+  `summary`, `experience_text`, and `education_text`.
+- Exact filters map `skill` to `skills.keyword`, `job_title` to `job_title.keyword`, and the other
+  filter categories to their corresponding normalized keyword fields.
+- Repeated values in a filter become one `bool.should` clause with `minimum_should_match: 1` and
+  therefore use OR semantics. Separate filter categories become separate `bool.filter` clauses and
+  therefore use AND semantics.
+- Filter values are Unicode-NFKC and whitespace-normalized, then deduplicated in first-seen order.
+  Exact filters use `term` queries inside `bool.filter`; Elasticsearch applies the committed keyword
+  normalizer at query time, so lowercase and supported ASCII folding remain owned by Elasticsearch.
+  Display values are never modified, and no full Python/Lucene Unicode-equivalence claim is made.
+- Keyword results sort by `_score`, `full_name.keyword`, and `profile_id`. Filter-only and match-all
+  requests omit `_score` and retain the latter two deterministic keys.
+- Pagination uses `from = (page - 1) * page_size`. Page size defaults to 20, is limited to 1 through
+  100, and cannot cross the 10,000-result window.
+
+The same request aggregates up to 20 buckets each for `skills`, `job_titles`, `industries`,
+`countries`, and `companies`. Aggregation keys use the normalized keyword fields and counts reflect
+the current keyword plus every applied filter.
+
+The gateway returns its response only to the application service. That service accepts an explicit
+source allowlist, translates document `profile_id` to public `id`, selects the current company from
+the deterministic company list, and emits stable facet buckets with `value` and `count`. Raw hits,
+index names, scores, source objects, sort arrays, shard information, timing, and aggregation internals
+never cross the API boundary.
+
+Expected connection, timeout, transport, and missing-index failures, plus an unexpected gateway
+response shape, return `503` with `code=search_unavailable`. There is no PostgreSQL search fallback.
+The PostgreSQL-backed profile-detail endpoint is independent and remains available during this
+failure. Elasticsearch clients created for an HTTP search are closed after both success and failure.
+
+The authenticated search HTTP endpoint is implemented. The React profile-search UI remains deferred
+to Day 3.

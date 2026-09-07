@@ -118,7 +118,7 @@ CORS_ALLOW_CREDENTIALS = False
 
 SPECTACULAR_SETTINGS = {
     "TITLE": "LinkedIn Profile Search API",
-    "DESCRIPTION": "Authentication and profile search API foundation.",
+    "DESCRIPTION": "Authentication and profile search API.",
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
 }

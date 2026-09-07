@@ -124,6 +124,14 @@ class ElasticsearchGateway:
     def refresh(self) -> None:
         self._request(self.client.indices.refresh, index=self.index_name)
 
+    def search(self, request: dict):
+        response = self._request(
+            self.client.search,
+            index=self.index_name,
+            **request,
+        )
+        return getattr(response, "body", response)
+
     def close(self) -> None:
         if self.owns_client:
             self.client.close()

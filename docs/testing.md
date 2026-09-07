@@ -36,6 +36,23 @@ These tests mock only the Elasticsearch gateway or bulk-helper boundary. Django 
 prefetching, projection, batching, stale-document replacement, command output, and failure exits run
 normally against the test database.
 
+Run the focused Day 2 search API slices:
+
+```bash
+docker compose run --rm backend pytest tests/test_search_query.py
+docker compose run --rm backend pytest tests/test_profile_search_api.py
+docker compose run --rm backend pytest tests/test_profile_detail_api.py
+```
+
+The pure query-builder tests cover match-all and keyword queries, every exact filter, repeated OR
+values, cross-category AND behavior, Elasticsearch-owned exact normalization, boosts, deterministic
+sorting, offsets, bounded facets, and the 10,000-result window. API tests issue real JWT access tokens
+and mock the Elasticsearch gateway only. They cover scalar repetition rejection, exact total-page
+arithmetic, no results, facets, metadata exclusion, controlled unavailable and missing-index
+responses, malformed gateway responses, safe optional-field defaults, and client closure. Detail tests
+use the real serializer and PostgreSQL test database, including nested data, exclusions, 404,
+Elasticsearch independence, and a bounded query count.
+
 To verify dependency isolation, stop Elasticsearch and run an ordinary backend command without
 `--no-deps`. PostgreSQL may start, but Elasticsearch must remain stopped:
 
@@ -133,6 +150,34 @@ The authentication tests cover registration validation and password hashing, JWT
 rejection behavior, current-user protection, public health and documentation routes, CORS origins,
 and the generated bearer security scheme. They use synthetic users only and do not test Simple JWT
 internals beyond the API contract.
+
+## Sanitized live search checks
+
+After migrations, a dataset import, and `make rebuild-index`, create a dedicated local reviewer user
+and obtain an access token. Do not paste or print the token, profile values, summaries, contacts, raw
+payloads, or complete Elasticsearch responses. Record only status codes, counts, top-level response
+keys, facet names, and boolean assertions.
+
+Exercise unauthenticated search, authenticated match-all pagination, keyword-only search, skill-only
+and job-title-only filters, repeated scalar rejection, repeated skill acceptance, combined filters,
+empty results, facets, and a PostgreSQL profile detail. Record only whether the exact hit relation is
+`eq`; do not print the response body.
+Then stop Elasticsearch and verify search returns the application-owned 503 while the same detail
+request still returns 200:
+
+```bash
+docker compose stop elasticsearch
+curl --output /dev/null --silent --write-out "%{http_code}\n" \
+  "http://localhost:8000/api/v1/profiles/search/" \
+  --header "Authorization: Bearer ${ACCESS_TOKEN}"
+curl --output /dev/null --silent --write-out "%{http_code}\n" \
+  "http://localhost:8000/api/v1/profiles/${PROFILE_ID}/" \
+  --header "Authorization: Bearer ${ACCESS_TOKEN}"
+docker compose start elasticsearch
+```
+
+Wait for Elasticsearch health after restart, then repeat authenticated search and confirm recovery.
+The detailed command sequence and response-shape assertions should be run without shell tracing.
 
 ## Focused versus complete milestone verification
 
