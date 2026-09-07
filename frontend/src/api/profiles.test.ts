@@ -62,8 +62,51 @@ const validDetail = {
   }],
 };
 
+const liveShapedSearch = {
+  count: 248,
+  page: 1,
+  page_size: 20,
+  total_pages: 13,
+  results: Array.from({ length: 20 }, (_, index) => ({
+    id: index + 1,
+    full_name: index === 0 ? "" : `Synthetic Person ${index + 1}`,
+    job_title: index === 0 ? "" : `Synthetic Job ${index + 1}`,
+    company: index === 0 ? "" : `Synthetic Company ${index + 1}`,
+    industry: index === 0 ? "" : "Synthetic Industry",
+    country: index === 0 ? "" : "Synthetic Country",
+    skills: index === 0 ? [] : ["Synthetic Skill"],
+    summary: index === 0 ? "" : "Synthetic summary",
+  })),
+  facets: {
+    skills: Array.from({ length: 20 }, (_, index) => ({
+      value: `Synthetic Skill ${index + 1}`,
+      count: 248 - index,
+    })),
+    job_titles: Array.from({ length: 20 }, (_, index) => ({
+      value: `Synthetic Job ${index + 1}`,
+      count: 248 - index,
+    })),
+    industries: Array.from({ length: 20 }, (_, index) => ({
+      value: index === 0 ? "" : `Synthetic Industry ${index + 1}`,
+      count: 248 - index,
+    })),
+    countries: Array.from({ length: 20 }, (_, index) => ({
+      value: index === 0 ? "" : `Synthetic Country ${index + 1}`,
+      count: 248 - index,
+    })),
+    companies: Array.from({ length: 20 }, (_, index) => ({
+      value: `Synthetic Company ${index + 1}`,
+      count: 248 - index,
+    })),
+  },
+};
+
 test("accepts the complete backend search response contract", () => {
   expect(parseSearchResponse(validSearch, { page: 1, page_size: 20 })).toEqual(validSearch);
+});
+
+test("accepts the sanitized live-shaped match-all response", () => {
+  expect(parseSearchResponse(liveShapedSearch, { page: 1, page_size: 20 })).toEqual(liveShapedSearch);
 });
 
 test.each([
@@ -75,7 +118,7 @@ test.each([
   { ...validSearch, results: [{ ...validSearch.results[0], id: "7" }] },
   { ...validSearch, results: [{ ...validSearch.results[0], full_name: null }] },
   { ...validSearch, results: [{ ...validSearch.results[0], skills: ["Python", 3] }] },
-  { ...validSearch, facets: { ...validSearch.facets, skills: [{ value: "", count: 1 }] } },
+  { ...validSearch, facets: { ...validSearch.facets, skills: [{ value: 7, count: 1 }] } },
   { ...validSearch, facets: { ...validSearch.facets, skills: [{ value: "python", count: -1 }] } },
   { ...validSearch, count: 1, total_pages: 0 },
   { ...validSearch, count: 41, total_pages: 3, results: [] },

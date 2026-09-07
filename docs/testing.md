@@ -157,14 +157,16 @@ Unicode comparison policy, unknown-parameter removal, pagination normalization, 
 transitions, and token-free query keys. API tests exercise runtime validation for all important
 search, facet, result, detail, experience, and education structures, including pagination arithmetic,
 request/response pagination consistency, legitimate out-of-range responses, exact repeated-parameter
-URLs, profile IDs, and abort-signal forwarding.
+URLs, profile IDs, abort-signal forwarding, and a sanitized live-shaped match-all response with blank
+facet values.
 
 Page integration tests retain the real router, authentication provider and guards, QueryClient, and
 session lifecycle. They mock only the typed profile API boundary and the narrow startup authentication
 requests. Search coverage includes initial match-all, restored URLs, explicit keyword/filter
 submission, all filter categories, repeated skills and job titles, clear, navigation restoration,
 facets and counts, selected values absent from facets, safe result rendering, count pluralization,
-loading, empty/error/retry states, pagination, preserved return URLs, and token-free cache keys.
+loading, empty/error/retry states, pagination, simultaneous same-category and cross-category
+selection, preserved return URLs, and token-free cache keys.
 Detail coverage includes loading, public and nested rendering, `404`, network/server/malformed errors,
 bounded retry boundaries, safe and unsafe external URLs, return validation, malformed IDs, abort
 handling, and exclusion of internal fields. Authentication coverage verifies that logout removes

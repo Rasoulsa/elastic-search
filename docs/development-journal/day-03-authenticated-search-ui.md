@@ -32,7 +32,7 @@ payloads, and search-engine responses are intentionally omitted.
 
 - Focused URL, API validation, search-page, profile-detail, and destination tests: passed.
 - Existing Phase 3A authentication, client, token-store, and destination tests: passed.
-- Complete frontend suite, run twice: 8 files and 166 tests passed on each run.
+- Complete frontend suite, run twice: 8 files and 169 tests passed on each run.
 - ESLint: passed.
 - TypeScript project type-check: passed.
 - Production Vite build: passed.
@@ -54,10 +54,11 @@ temporary synthetic reviewer account, which was removed after verification:
 - With Elasticsearch stopped, search returned the stable `503` code while detail remained `200`.
 - After Elasticsearch became healthy again, search returned `200` with the documented shape.
 
-The required in-app browser-control runtime was unavailable in this session, so no browser
-screenshots or visual 375-pixel interaction evidence were captured. Responsive behavior and
-interaction state are covered by CSS rules, semantic component tests, and production build checks;
-interactive visual review remains the only unexecuted manual check.
+A subsequent manual browser acceptance check found a live-integration defect: valid empty-string
+`industries` and `countries` facet buckets were rejected by the frontend runtime validator. The
+validator now accepts those backend-valid strings, while normalized controls omit blank options.
+The original Day 3 verification captured no browser screenshots or visual 375-pixel interaction
+evidence. A complete desktop, tablet, and mobile visual pass remains outstanding.
 
 ## Accepted limitations and remaining risk
 

@@ -113,7 +113,6 @@ function isFacetArray(value: unknown): value is FacetEntry[] {
       (entry) =>
         isRecord(entry) &&
         isText(entry.value) &&
-        entry.value.length > 0 &&
         isInteger(entry.count, 0),
     )
   );

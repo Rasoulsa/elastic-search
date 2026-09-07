@@ -35,7 +35,7 @@ function response(overrides: Partial<ProfileSearchResponse> = {}): ProfileSearch
     }],
     facets: {
       skills: [{ value: "Python", count: 42 }, { value: "Django", count: 24 }],
-      job_titles: [{ value: "Backend Engineer", count: 12 }],
+      job_titles: [{ value: "Backend Engineer", count: 12 }, { value: "Staff Engineer", count: 10 }],
       industries: [{ value: "Software", count: 18 }],
       countries: [{ value: "Finland", count: 8 }],
       companies: [{ value: "Example Company", count: 6 }],
@@ -82,6 +82,30 @@ test("loads the initial match-all page and facets", async () => {
   expect(screen.getByRole("checkbox", { name: /Python.*42/ })).toBeInTheDocument();
 });
 
+test("renders a sanitized live-shaped match-all response and all facet groups", async () => {
+  searchMock.mockResolvedValue(response({
+    count: 248,
+    total_pages: 13,
+    results: Array.from({ length: 20 }, (_, index) => ({
+      ...response().results[0],
+      id: index + 1,
+      full_name: `Synthetic Person ${index + 1}`,
+    })),
+    facets: {
+      skills: [{ value: "Synthetic Skill", count: 42 }],
+      job_titles: [{ value: "Synthetic Job", count: 24 }],
+      industries: [{ value: "Synthetic Industry", count: 18 }],
+      countries: [{ value: "Synthetic Country", count: 12 }],
+      companies: [{ value: "Synthetic Company", count: 8 }],
+    },
+  }));
+  renderApp();
+  expect(await screen.findByRole("heading", { name: "248 profiles" })).toBeInTheDocument();
+  for (const label of ["Synthetic Skill", "Synthetic Job", "Synthetic Industry", "Synthetic Country", "Synthetic Company"]) {
+    expect(screen.getByRole("checkbox", { name: new RegExp(label) })).toBeInTheDocument();
+  }
+});
+
 test("URL values initialize controls and repeated filters", async () => {
   renderApp("/search?q=engineer&skill=Python&skill=Django&job_title=Backend+Engineer");
   await screen.findByRole("heading", { name: "1 profile" });
@@ -110,11 +134,38 @@ test("Enter submits a filter-only search with repeated filters", async () => {
   await user.click(screen.getByRole("checkbox", { name: /Python/ }));
   await user.click(screen.getByRole("checkbox", { name: /Django/ }));
   await user.click(screen.getByRole("checkbox", { name: /Backend Engineer/ }));
+  expect(screen.getByRole("checkbox", { name: /Python/ })).toBeChecked();
+  expect(screen.getByRole("checkbox", { name: /Django/ })).toBeChecked();
+  expect(screen.getByRole("checkbox", { name: /Backend Engineer/ })).toBeChecked();
   fireEvent.submit(screen.getByLabelText("Keywords").closest("form")!);
   await waitFor(() => expect(router.state.location.search).toContain("skill=Python&skill=Django"));
   expect(router.state.location.search).toContain("job_title=Backend+Engineer");
   expect(searchMock).toHaveBeenLastCalledWith(
     expect.objectContaining({ q: "", skill: ["Python", "Django"], job_title: ["Backend Engineer"] }),
+    expect.any(AbortSignal),
+  );
+});
+
+test("keeps multiple same-category and cross-category selections through submit", async () => {
+  const { router } = renderApp();
+  await screen.findByRole("heading", { name: "1 profile" });
+  const user = userEvent.setup();
+  for (const name of [/Python/, /Django/, /Backend Engineer/, /Staff Engineer/]) {
+    await user.click(screen.getByRole("checkbox", { name }));
+  }
+  for (const name of [/Python/, /Django/, /Backend Engineer/, /Staff Engineer/]) {
+    expect(screen.getByRole("checkbox", { name })).toBeChecked();
+  }
+  await user.click(screen.getByRole("button", { name: "Apply filters" }));
+  await waitFor(() => expect(router.state.location.search).toBe(
+    "?skill=Python&skill=Django&job_title=Backend+Engineer&job_title=Staff+Engineer",
+  ));
+  expect(searchMock).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      skill: ["Python", "Django"],
+      job_title: ["Backend Engineer", "Staff Engineer"],
+      page: 1,
+    }),
     expect.any(AbortSignal),
   );
 });

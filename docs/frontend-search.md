@@ -51,6 +51,8 @@ immediately. Skills, job titles, industries, countries, and companies are multi-
 Every facet displays its result count. Selected values are merged ahead of current buckets, remain
 visible when missing from a later response, and can be removed from the filter or active-search
 chips. Lists initially show six options and expose a small show-more control when needed.
+The backend may return blank-string buckets for empty persisted facet values; strict runtime
+validation accepts these backend-valid strings, while normalized controls omit blank options.
 
 The result heading uses the exact backend `count`, correct singular/plural wording, and the current
 page when multiple pages exist. Cards render only the allowlisted full name, current job title,
