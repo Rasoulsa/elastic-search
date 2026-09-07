@@ -1,8 +1,8 @@
 # LinkedIn Profile Search
 
-A small Day 2 profile ingestion foundation for a LinkedIn profile search technical assignment.
-PostgreSQL is the canonical source of truth. Elasticsearch is running as infrastructure, but it is
-not integrated with Django yet.
+A small Day 2 foundation for a LinkedIn profile search technical assignment. PostgreSQL is the
+canonical source of truth. Elasticsearch is running as infrastructure, but it is not integrated
+with Django yet.
 
 ## Stack
 
@@ -11,8 +11,9 @@ not integrated with Django yet.
 - React 19, TypeScript, Vite, React Router, and TanStack Query
 - pytest, Ruff, Vitest, React Testing Library, and ESLint
 
-Authentication, indexing, the search API, and the complete profile search UI remain intentionally
-deferred. Dataset import is available as an explicit command.
+JWT authentication and API documentation are implemented. Elasticsearch indexing, the search API,
+and the complete profile search UI remain intentionally deferred. Dataset import is available as an
+explicit command.
 
 ## Run locally
 
@@ -20,6 +21,8 @@ Docker and Docker Compose are the only prerequisites for the container workflow.
 
 ```bash
 cp .env.example .env
+python -c "import secrets; print(secrets.token_urlsafe(64))"
+# Replace the DJANGO_SECRET_KEY placeholder in .env with the generated value.
 make setup
 docker compose up -d
 make migrate
@@ -27,7 +30,9 @@ curl http://localhost:8000/health/live/
 curl http://localhost:8000/health/ready/
 ```
 
-`docker compose up -d` starts the services in the background; use `docker compose up` or
+The key command prints a local non-production key. Replace the clearly marked placeholder in `.env`
+before running any Docker Compose command; never commit `.env` or a real key. `docker compose up -d`
+starts the services in the background; use `docker compose up` or
 `docker compose logs -f` when foreground logs are useful. Apply migrations after the services are
 running, then verify both health endpoints.
 
@@ -36,6 +41,10 @@ The frontend is available at `http://localhost:5173`; the backend is available a
 
 - `GET /health/live/` for process liveness
 - `GET /health/ready/` for PostgreSQL connectivity only
+- `POST /api/v1/auth/register/`, `POST /api/v1/auth/token/`, and
+  `POST /api/v1/auth/token/refresh/` for JWT authentication
+- `GET /api/v1/auth/me/` for the authenticated current user
+- `GET /api/schema/` and `GET /api/docs/` for the public OpenAPI schema and Swagger UI
 
 The readiness endpoint runs a small PostgreSQL connectivity query. It does not check migration
 status or Elasticsearch, and it does not expose database exception details.
@@ -68,7 +77,8 @@ operation.
 For checks outside Docker, install `backend/requirements.txt`, run backend commands from `backend/`,
 and use `npm install` in `frontend/`. The `.env.example` values use Docker Compose service
 hostnames (`db` and `elasticsearch`). Override them with local-host values such as
-`POSTGRES_HOST=localhost` when running the backend outside Docker.
+`POSTGRES_HOST=localhost` when running the backend outside Docker. `CORS_ALLOWED_ORIGINS` defaults
+to the local Vite origin `http://localhost:5173` and accepts a comma-separated allowlist.
 
 ## Data safety
 

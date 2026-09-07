@@ -3,15 +3,16 @@
 ## Purpose and Day 2 scope
 
 This repository is the platform foundation for a LinkedIn profile search application. Day 2 adds an
-explicit, repeatable CSV importer and the identity, raw-payload, and source-order fields needed for
-future search. It does not implement indexing, searching, or user authentication.
+explicit, repeatable CSV importer and JWT authentication with public API documentation. The identity,
+raw-payload, and source-order fields support future search. Indexing and searching are not implemented.
 
 ## Application architecture
 
-The React and TypeScript frontend is served by Vite and is the client for a future Django REST API.
-The Django backend exposes health endpoints and owns the relational profile data. PostgreSQL is the
-canonical source of truth. Elasticsearch is a derived search index that will be rebuilt explicitly
-from PostgreSQL; it is running in Compose but is not integrated with Django in this phase.
+The React and TypeScript frontend is served by Vite and is the client for the Django REST API. The
+Django backend exposes health, authentication, and API documentation endpoints and owns the
+relational user and profile data. PostgreSQL is the canonical source of truth. Elasticsearch is a
+derived search index that will be rebuilt explicitly from PostgreSQL; it is running in Compose but
+is not integrated with Django in this phase.
 
 ```mermaid
 flowchart LR
@@ -23,8 +24,8 @@ flowchart LR
 ## Current service responsibilities
 
 - `frontend` runs the React, TypeScript, and Vite application shell.
-- `backend` runs Django and Django REST Framework, including the health endpoints and profile model
-  foundation.
+- `backend` runs Django and Django REST Framework, including health endpoints, JWT authentication,
+  OpenAPI/Swagger documentation, and the profile model foundation.
 - `db` runs PostgreSQL 16, where application profile data will be canonical.
 - `elasticsearch` runs Elasticsearch 8 as infrastructure for the future derived search index. No
   Django client, mappings, or indexing code exists yet.
@@ -57,6 +58,20 @@ profile. The import command is explicit; there is no search API yet.
 - Readiness is limited to PostgreSQL connectivity. It does not check migration status or
   Elasticsearch availability.
 
+## Authentication and API documentation
+
+- `POST /api/v1/auth/register/` creates a user with Django's default user model and never issues a
+  token.
+- `POST /api/v1/auth/token/` and `POST /api/v1/auth/token/refresh/` are standard Simple JWT
+  endpoints. Access tokens last 15 minutes and refresh tokens last 7 days. Refresh rotation and
+  token blacklisting are disabled; tokens are not stored in the database.
+- `GET /api/v1/auth/me/` requires a valid `Authorization: Bearer <access-token>` header and returns
+  only the current user's id, username, and email.
+- The default API permission is authenticated access. Health, registration, token, schema, and
+  Swagger endpoints explicitly remain public.
+- `GET /api/schema/` serves the OpenAPI schema and `GET /api/docs/` serves Swagger UI. CORS allows
+  only the origins listed in `CORS_ALLOWED_ORIGINS`; credentials are disabled.
+
 ## Docker Compose topology
 
 Compose runs `db`, `elasticsearch`, `backend`, and `frontend`. The backend uses the Compose service
@@ -81,6 +96,6 @@ Database counters report actual creates, updates, unchanged rows, and deletes.
 
 ## Intentionally deferred
 
-JWT authentication, Elasticsearch clients and mappings, index rebuilding, the search API, protected
-API access, and the complete profile search UI are deferred to later slices. Django signals will not
-be used for PostgreSQL-to-Elasticsearch indexing.
+Elasticsearch clients and mappings, index rebuilding, the search API, and the complete profile
+search UI are deferred to later slices. Django signals will not be used for PostgreSQL-to-
+Elasticsearch indexing.

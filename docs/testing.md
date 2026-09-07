@@ -10,6 +10,13 @@ Run the health tests for the readiness behavior:
 docker compose run --rm backend pytest tests/test_health.py
 ```
 
+Run the focused authentication, OpenAPI, CORS, and secret-configuration tests:
+
+```bash
+docker compose build backend
+DJANGO_SECRET_KEY="$(python -c "import secrets; print(secrets.token_urlsafe(64))")" docker compose run --rm backend pytest tests/test_auth.py tests/test_security_config.py
+```
+
 Run the Day 2 model, importer, and migration tests when changing profile ingestion:
 
 ```bash
@@ -31,6 +38,7 @@ Run Django system and migration consistency checks:
 docker compose run --rm backend python manage.py check
 docker compose run --rm backend python manage.py makemigrations --check --dry-run
 docker compose config -q
+docker compose run --rm backend python manage.py spectacular --validate
 ```
 
 Run the mounted private dataset twice for operational verification. The importer prints counts and
@@ -72,10 +80,11 @@ The explicit type-check uses the repository's TypeScript project references with
 
 ## Compose and health checks
 
-Validate the Compose file without starting services:
+Validate the Compose file without starting services. Compose requires an explicitly supplied
+non-empty key even for this configuration-only check:
 
 ```bash
-docker compose config -q
+DJANGO_SECRET_KEY="$(python -c "import secrets; print(secrets.token_urlsafe(64))")" docker compose config -q
 ```
 
 After starting the services and applying migrations, inspect service health and endpoints:
@@ -85,6 +94,11 @@ docker compose ps
 curl --fail http://localhost:8000/health/live/
 curl --fail http://localhost:8000/health/ready/
 ```
+
+The authentication tests cover registration validation and password hashing, JWT issue/refresh and
+rejection behavior, current-user protection, public health and documentation routes, CORS origins,
+and the generated bearer security scheme. They use synthetic users only and do not test Simple JWT
+internals beyond the API contract.
 
 ## Focused versus complete milestone verification
 
