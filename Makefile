@@ -1,4 +1,4 @@
-.PHONY: setup up down migrate import test test-backend test-frontend lint
+.PHONY: setup up down migrate import create-index rebuild-index test test-backend test-frontend lint
 
 setup:
 	@test -f .env || cp .env.example .env
@@ -15,6 +15,12 @@ migrate:
 
 import:
 	docker compose run --rm backend python manage.py import_profiles --path /data/profiles.txt
+
+create-index:
+	docker compose run --rm backend python manage.py create_profile_index
+
+rebuild-index:
+	docker compose run --rm backend python manage.py rebuild_profile_index
 
 test: test-backend test-frontend
 

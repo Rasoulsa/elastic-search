@@ -25,6 +25,26 @@ docker compose run --rm backend pytest tests/test_import_profiles.py
 docker compose run --rm backend pytest tests/test_profile_migrations.py
 ```
 
+Run the mapping, projection, gateway, and lifecycle-command tests. They do not contact a live
+Elasticsearch service, and the backend Compose service does not start Elasticsearch as a dependency:
+
+```bash
+docker compose run --rm backend pytest tests/test_search_index.py tests/test_search_documents.py tests/test_search_gateway.py tests/test_search_commands.py
+```
+
+These tests mock only the Elasticsearch gateway or bulk-helper boundary. Django models, querysets,
+prefetching, projection, batching, stale-document replacement, command output, and failure exits run
+normally against the test database.
+
+To verify dependency isolation, stop Elasticsearch and run an ordinary backend command without
+`--no-deps`. PostgreSQL may start, but Elasticsearch must remain stopped:
+
+```bash
+docker compose stop elasticsearch
+docker compose run --rm backend python manage.py check
+docker compose ps
+```
+
 Run Ruff and format verification on the backend:
 
 ```bash
@@ -48,11 +68,25 @@ row-range reason codes only; it never prints source records or profile values:
 make migrate
 make import
 make import
+make rebuild-index
+make rebuild-index
 ```
 
 Do not encode the private dataset's observed counts as automated test expectations. Synthetic tests
 cover parsing, normalization, duplicate consolidation, identity conflict handling, tri-state scalar
 and collection updates, skills policy, rollback behavior, and database-change counters.
+
+For manual index verification, compare the canonical and derived counts without printing documents:
+
+```bash
+docker compose exec backend python manage.py shell -c "from apps.profiles.models import Profile; print(Profile.objects.count())"
+curl --fail http://localhost:9200/linkedin_profiles_v1/_count
+curl --fail http://localhost:9200/linkedin_profiles_v1/_mapping
+```
+
+Run `make rebuild-index` twice and confirm the count is unchanged. For structural inspection, request
+one document with an explicit safe `_source` allowlist such as `profile_id,full_name,job_title`; do
+not print the complete source document from the private dataset.
 
 The migration suite uses historical models from Django's migration app registry. It exercises a
 fresh profiles schema from zero through the latest migration (`0003`) and upgrades an initial `0001`
@@ -126,3 +160,7 @@ health checks remain explicit commands because they validate runtime and configu
   apply `make migrate`. Avoid deleting named volumes unless the local data can be discarded.
 - If health checks fail, inspect `docker compose ps` and the backend/database logs. Readiness only
   confirms PostgreSQL connectivity; it does not confirm migrations or Elasticsearch integration.
+- If a rebuild fails after deleting the old index, fix Elasticsearch connectivity or the reported
+  bulk failure and rerun `make rebuild-index`. The assignment-sized replacement strategy does not
+  preserve the prior index during rebuilding. Recreation failure leaves the index missing; bulk
+  failure can leave the new index empty or partially populated.
