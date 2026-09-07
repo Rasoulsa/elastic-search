@@ -44,6 +44,7 @@ services:
       ELASTICSEARCH_URL: http://elasticsearch:9200
     volumes:
       - ./backend:/app
+      - ./data:/data:ro
     ports:
       - "8000:8000"
     depends_on:

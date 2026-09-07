@@ -4,22 +4,25 @@ Commands below assume Docker Compose is running and should be executed from the 
 
 ## Focused backend checks
 
-Run the health tests for the Day 1 readiness behavior:
+Run the health tests for the readiness behavior:
 
 ```bash
 docker compose run --rm backend pytest tests/test_health.py
 ```
 
-Run the model tests when changing the profile model foundation:
+Run the Day 2 model, importer, and migration tests when changing profile ingestion:
 
 ```bash
 docker compose run --rm backend pytest tests/test_models.py
+docker compose run --rm backend pytest tests/test_import_profiles.py
+docker compose run --rm backend pytest tests/test_profile_migrations.py
 ```
 
-Run Ruff on changed backend files:
+Run Ruff and format verification on the backend:
 
 ```bash
-docker compose run --rm backend ruff check apps/search/views.py tests/test_health.py
+docker compose run --rm backend ruff check .
+docker compose run --rm backend ruff format --check .
 ```
 
 Run Django system and migration consistency checks:
@@ -27,7 +30,34 @@ Run Django system and migration consistency checks:
 ```bash
 docker compose run --rm backend python manage.py check
 docker compose run --rm backend python manage.py makemigrations --check --dry-run
+docker compose config -q
 ```
+
+Run the mounted private dataset twice for operational verification. The importer prints counts and
+row-range reason codes only; it never prints source records or profile values:
+
+```bash
+make migrate
+make import
+make import
+```
+
+Do not encode the private dataset's observed counts as automated test expectations. Synthetic tests
+cover parsing, normalization, duplicate consolidation, identity conflict handling, tri-state scalar
+and collection updates, skills policy, rollback behavior, and database-change counters.
+
+The migration suite uses historical models from Django's migration app registry. It exercises a
+fresh profiles schema from zero through the latest migration (`0003`) and upgrades an initial `0001`
+database through `0003`. The upgrade assertions cover row and primary-key preservation, empty-URL
+normalization, deterministic zero-based `source_order` backfill by historical primary key, active
+source-order and nullable-alias uniqueness constraints, and the 600-character public identifier.
+Each migration test restores the latest schema during cleanup.
+
+The complete strong-idempotency test imports duplicate synthetic source rows with aliases, skills,
+experience, education, raw payload, and a partial-invalid field. It snapshots every persisted profile,
+skill, through-table, experience, and education field plus aggregate counts. The second import must
+match exactly, including timestamps and every primary key, and all create/update/delete counters must
+remain zero.
 
 ## Frontend checks
 
@@ -58,8 +88,8 @@ curl --fail http://localhost:8000/health/ready/
 
 ## Focused versus complete milestone verification
 
-Focused checks exercise the smallest changed surface, such as the health tests, the changed Ruff
-files, and the explicit frontend checks. The complete Day 1 milestone suite is broader:
+Focused checks exercise the smallest changed surface, such as importer, migration, or health tests.
+The complete current milestone suite is broader:
 
 ```bash
 make test

@@ -1,4 +1,4 @@
-.PHONY: setup up down migrate test test-backend test-frontend lint
+.PHONY: setup up down migrate import test test-backend test-frontend lint
 
 setup:
 	@test -f .env || cp .env.example .env
@@ -12,6 +12,9 @@ down:
 
 migrate:
 	docker compose run --rm backend python manage.py migrate
+
+import:
+	docker compose run --rm backend python manage.py import_profiles --path /data/profiles.txt
 
 test: test-backend test-frontend
 
