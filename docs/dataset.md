@@ -6,43 +6,49 @@ host to `/data` in the backend container and is not committed to Git.
 ## Contract
 
 The importer accepts the exact 77-column CSV header and reads UTF-8 CSV with comma delimiters,
-double quotes, and multiline quoted fields. The header is the canonical field vocabulary; it does
-not prove that every 77-value row uses that order. Width-only validation was insufficient because
-the supplied file contains exact-width rows from deterministic legacy/reordered layouts.
+double quotes, and multiline quoted fields. The header is canonical vocabulary, not positional
+proof. The supplied exact-width rows have a stable identity prefix and one of ten deterministic
+structured-collection blocks, while scalar positions outside those blocks vary incompatibly even
+within the same block-start group. The first alignment correction fixed the collection mappings but
+incorrectly treated each block start as a complete scalar layout.
 
 Rows are recognized by structural signatures, never by profile identity or content-specific
 dictionaries. The current private file uses these recognized layouts:
 
 - `reordered-block-{b}` for collection-block starts `b = 25, 28, 39, 40, 41, 44, 45, 46, 48`.
-  The scalar `summary` is at source position `b - 1`; `skills`, `countries`, `experience`, and
-  `education` are at `b + 3`, `b + 6`, `b + 8`, and `b + 9` respectively. The remaining fields are
-  mapped by the explicit named contract in the importer. The `b = 45` contract is the header-aligned
-  layout.
-- `legacy-facebook-appended-77`, whose source order is canonical positions `0-6`, then `10-76`,
-  then `7-9`. In this layout, `industry`, `job_title`, `summary`, `skills`, `countries`,
-  `experience`, and `education` are at source positions `7`, `8`, `41`, `45`, `48`, `50`, and `51`.
+- `legacy-facebook-appended-77`, whose structured collection block starts at position 42.
+
+For every contract, `summary` is at `b - 1`; `phone_numbers`, `skills`, `location_names`,
+`countries`, `experience`, and `education` are at `b`, `b + 3`, `b + 4`, `b + 6`, `b + 8`, and
+`b + 9`. Current job and company fields are canonicalized from the explicitly keyed primary/first
+experience object. Profile location and country use the explicitly named `location_names` and
+`countries` lists. The supported layouts do not provide an unambiguous keyed salary source, so no
+salary is inferred from positional ranges. Ambiguous scalar positions, including `201-500` and
+`70,000-85,000`, are preserved only under `_source_values` and never assigned a canonical field
+name.
 
 The relevant sanitized position mapping is:
 
-| Canonical field | Header position | Facebook-appended legacy position |
-| --- | ---: | ---: |
-| `industry` | 10 | 7 |
-| `job_title` | 11 | 8 |
-| `job_company_name` | 15 | 12 |
-| `job_company_size` | 17 | 14 |
-| `location_name` | 33 | 30 |
-| `location_country` | 37 | 34 |
-| `summary` | 44 | 41 |
-| `skills` | 48 | 45 |
-| `countries` | 51 | 48 |
-| `experience` | 53 | 50 |
-| `education` | 54 | 51 |
+| Layout | Rows | Summary | Phone | Skills | Location list | Country list | Experience | Education |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `legacy-facebook-appended-77` | 35 | 41 | 42 | 45 | 46 | 48 | 50 | 51 |
+| `reordered-block-25` | 28 | 24 | 25 | 28 | 29 | 31 | 33 | 34 |
+| `reordered-block-28` | 13 | 27 | 28 | 31 | 32 | 34 | 36 | 37 |
+| `reordered-block-39` | 19 | 38 | 39 | 42 | 43 | 45 | 47 | 48 |
+| `reordered-block-40` | 21 | 39 | 40 | 43 | 44 | 46 | 48 | 49 |
+| `reordered-block-41` | 24 | 40 | 41 | 44 | 45 | 47 | 49 | 50 |
+| `reordered-block-44` | 34 | 43 | 44 | 47 | 48 | 50 | 52 | 53 |
+| `reordered-block-45` | 76 | 44 | 45 | 48 | 49 | 51 | 53 | 54 |
+| `reordered-block-46` | 13 | 45 | 46 | 49 | 50 | 52 | 54 | 55 |
+| `reordered-block-48` | 19 | 47 | 48 | 51 | 52 | 54 | 56 | 57 |
 
-Rows with a known layout are mapped into canonical keys before normalization. Ambiguous exact-width
-rows are quarantined as `STRUCTURAL_LAYOUT_AMBIGUOUS`; unsupported exact-width rows are quarantined
-as `STRUCTURAL_LAYOUT`; non-77-column logical records remain `STRUCTURAL_WIDTH`. The original row
-and any unmapped source values remain private in `raw_payload` for diagnostics; API serializers and
-search projections never expose them.
+Rows with a known layout are mapped into canonical keys before normalization. Winning structural
+scores must be at least 40 and exceed the runner-up by at least 20. Ambiguous exact-width rows are
+quarantined as `AMBIGUOUS_LAYOUT`; unsupported or low-confidence exact-width rows are quarantined
+as `UNKNOWN_LAYOUT`; repeated headers are `STRUCTURAL_REPEATED_HEADER`; non-77-column logical
+records remain `STRUCTURAL_WIDTH`. The original row is private under positional `_source_values`.
+Importer-owned version, layout, selected source order, and canonical paths are nested under the
+strict `_importer` namespace. API serializers and search projections never expose this storage.
 
 Run it explicitly:
 
@@ -78,15 +84,19 @@ Skills use the same explicit states:
 - A non-empty list with no valid strings is `INVALID`; on update it preserves existing skill
   relationships.
 
-The importer never deletes global `Skill` rows merely because a profile relationship is cleared.
+Ordinary imports never delete global `Skill` rows merely because a relationship is cleared. During
+this bounded correction only, unreferenced skill rows that were previously linked to a profile with
+known broken-mapping provenance are removed; unrelated manually created skills are preserved.
 
 The command reports logical and physical row ranges with reason codes and aggregate counters only. It
 does not print private records or profile values and does not create a private-record quarantine
 file.
 
-The corrected private verification observed 336 logical records, 283 exact-width accepted profile
-rows, 53 malformed-width records, 35 duplicate rows, and 248 unique importable profiles across the
-ten recognized layouts. These are operational results, not automated-test assertions.
+The second investigation used a fresh isolated SQLite database; the existing development database
+was not changed because PostgreSQL was unavailable. Corrected private verification observed 336
+logical records, 283 exact-width records, one repeated-header record, 282 accepted rows, 53
+malformed-width records, 35 duplicates, and 247 unique real profiles. These are operational results,
+not automated-test assertions.
 
 The corrected reimport procedure is:
 
@@ -96,6 +106,19 @@ The corrected reimport procedure is:
 3. Run `python manage.py rebuild_profile_index` twice.
 4. Compare sanitized PostgreSQL and Elasticsearch counts and document IDs, then inspect only
    allowlisted facets and structural anomaly counters.
+
+Final live `canonical-v2` verification recorded 247 unique profiles on the first PostgreSQL import:
+230 profiles were updated to the latest provenance contract, 17 were unchanged, and zero were
+created or deleted. One repeated header and 53 malformed-width records were quarantined; unknown
+and ambiguous layout counts were both zero. Three summary-boundary warnings caused invalid summaries
+to be omitted safely rather than mapped from unrelated fields. The second import left all 247
+profiles unchanged, with zero creates, updates, or deletes; 1,775 experiences and 707 education
+records were unchanged. Both Elasticsearch rebuilds reported
+`attempted=247 indexed=247 failed=0 unprocessed=0`, and the index count remained 247. Final human
+browser acceptance then completed at desktop, approximately 768px, and approximately 375px widths;
+authenticated rendering, corrected facets/results, simultaneous filters, URL persistence, pagination,
+reload, Back/Forward, detail/return navigation, Elasticsearch outage/recovery, logout, no horizontal
+overflow, and no console errors were confirmed.
 
 This defect was discovered during Day 3 browser acceptance. The frontend was rendering shifted
 PostgreSQL/Elasticsearch data; the corrective sequence is dataset mapping, PostgreSQL reimport,
@@ -109,6 +132,7 @@ Row counters describe source processing and consolidation:
   records.
 - `exact_width_records`: records with exactly the required 77 columns.
 - `malformed_width_records`: records rejected because their column count is wrong.
+- `repeated_header_records`: exact-width body records rejected because they repeat the header.
 - `identity_invalid_records`: exact-width records rejected because no valid LinkedIn alias exists.
 - `identity_conflict_records`: accepted records quarantined because aliases would join conflicting
   identities, either during consolidation or against existing profiles.
@@ -135,13 +159,15 @@ Field-warning counters diagnose accepted and rejected field content without expo
 
 Database counters represent persisted state, not source items:
 
-- `profiles_created`, `profiles_updated`, and `profiles_unchanged`: final consolidated profile plans
-  that respectively insert a row, change a row, or leave its persisted scalar and raw-payload state
-  unchanged.
+- `profiles_created`, `profiles_updated`, `profiles_unchanged`, and `profiles_deleted`: final
+  consolidated profile outcomes that respectively insert, change, retain, or remove a row. Deletion
+  is bounded to a proven repeated-header profile created by the broken mapper.
 - `skills_created`: new global `Skill` rows inserted while applying a changed relationship set.
 - `skills_reused`: existing global `Skill` rows selected while applying a changed relationship set.
   It is a reuse counter, not a skill-row update counter. When the relationship set already matches,
   both skill counters remain zero and the through rows remain untouched.
+- `skills_deleted`: unreferenced rows removed only from the set previously linked through proven
+  broken-mapping provenance.
 - `experiences_created`, `experiences_updated`, `experiences_unchanged`, and
   `experiences_deleted`: actual child rows inserted, changed in place, retained without changes, or
   deleted.
@@ -153,10 +179,22 @@ values, company-size-only ranges, dates, and salary ranges from job titles, indu
 and company names; it rejects numeric-only company names and structured summaries. It does not use
 an exhaustive country or title dictionary, so ordinary words remain valid skills or countries.
 Invalid values preserve earlier valid duplicate values under the existing tri-state consolidation
-contract; invalid canonical metadata is retained only under private diagnostic keys.
+contract. Rejected canonical values are not copied into canonical payload keys; the private
+positional source-preservation structure remains available for local provenance checks.
 
 Migration `0002` safely upgrades the initial schema by converting legacy `profile_url=""` values to
 NULL before applying nullable unique aliases. It also backfills zero-based `source_order` separately
 per profile in ascending historical primary-key order before adding the position constraints.
 Migration `0003` expands `public_identifier` to 600 characters and is the latest profiles migration.
 Raw data remains private and is never written to tracked files or printed by the command.
+
+Confidence evidence for the private file was calculated without printing values or identities. Across
+the 282 accepted non-header exact-width rows, winning scores were 67 or 77 and the weakest winning
+margin was 34. The thresholds of 40 and 20 therefore retain a structural evidence gap below the
+weakest observed genuine layout while still accepting the valid weakest layout. A unique winner below
+40 is `UNKNOWN_LAYOUT`; a winner with a margin below 20 is `AMBIGUOUS_LAYOUT`.
+
+The corrected fresh baseline is 247 real profiles, 2,348 linked/global skills, 7,078 profile-skill
+links, 1,775 experiences, and 707 education rows. A corrected development database may retain 2,557
+global skills because 209 unreferenced legacy rows lack safe ownership provenance; those rows remain
+unlinked and are absent from documents, facets, and API responses.

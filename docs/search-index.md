@@ -22,11 +22,27 @@ backend tests require PostgreSQL but not a live Elasticsearch service. Explicit 
 profile search require Elasticsearch.
 
 After any corrected dataset import, rebuild `linkedin_profiles_v1` from PostgreSQL. The index is
-derived state and must not be used to repair source data. During the Day 3 acceptance remediation,
-two consecutive rebuilds each indexed 248 of 248 profiles with zero failures; sanitized PostgreSQL
-and Elasticsearch document IDs matched, and match-all returned 248 hits. Country and industry facet
-buckets contained no date, salary-range, or serialized-list artifacts, job-title buckets contained
-no company-size/date artifacts, and all indexed summaries were scalar strings.
+derived state and must not be used to repair source data. The second Day 3 investigation found that
+the first rebuild had faithfully copied mislabeled canonical payload keys. The corrected projector
+accepts a derived scalar only when `canonical-v2` metadata names that field's permitted parsed source
+path. Value equality alone is insufficient: cross-field paths, malformed paths, wrong types, unknown
+fields, and selected-experience mismatches fail closed. Structural scalar validation remains an
+independent requirement. The Elasticsearch mapping and query behavior did not change.
+
+Final live `canonical-v2` verification completed after the corrective import. The first PostgreSQL
+import found 247 unique profiles: 230 were updated to the latest provenance contract, 17 were
+unchanged, and zero were created or deleted. One repeated header and 53 malformed-width records were
+quarantined; unknown and ambiguous layout counts were both zero. Three summary-boundary warnings
+caused invalid summaries to be omitted safely rather than mapped from unrelated fields.
+
+The second import left all 247 profiles unchanged, with zero creates, updates, or deletes; 1,775
+experiences and 707 education records were unchanged. Both explicit rebuilds reported
+`attempted=247 indexed=247 failed=0 unprocessed=0`, and the index count remained 247. Final human
+browser acceptance then completed at desktop, approximately 768px, and approximately 375px widths;
+authenticated rendering, corrected facets/results, simultaneous filters, URL persistence, pagination,
+reload, Back/Forward, detail/return navigation, Elasticsearch outage/recovery, logout, no horizontal
+overflow, and no console errors were confirmed. Older screenshots showed pre-remediation corruption
+and are not acceptance evidence.
 
 ## Explicit mapping
 
@@ -77,17 +93,21 @@ the decimal PostgreSQL profile primary key. The projection requires prefetched `
 - `full_name` uses the persisted full name, falling back to joined first and last names.
 - Experiences and education are ordered by importer `source_order`, then primary key. Skills are
   sorted by their normalized value.
-- Current experience is the first source-ordered experience with no end date, falling back to the
-  first experience. `job_title` uses the imported profile headline because it represents the source
-  record's current job title, then falls back to the current experience title.
+- Current experience uses one shared policy: a validated importer-selected source order when present;
+  otherwise the first valid open experience; otherwise the first valid experience in source order.
+  Multiple source primary markers are treated as malformed and use that safe fallback. The top-level
+  `job_title` is emitted only from validated current-experience provenance.
 - `job_titles` starts with `job_title`, followed by experience titles in source order. `company`
-  starts with the imported current `job_company_name`, falling back to the current experience
-  company, then includes all experience companies in source order.
+  starts with a validated imported current `job_company_name`, then includes independently validated
+  persisted experience companies in source order.
 - `experience_text` combines title, company, location, and description for each experience.
   `education_text` combines school, degree, and field of study for each education.
-- `industry` whitelists the imported `industry` value, falling back to `job_company_industry`.
-  `country` whitelists `location_country`. These fields currently live in the persisted import
-  payload rather than stable model columns.
+- `industry` accepts only the selected experience's `company.industry` path (through canonical
+  `industry` or `job_company_industry`); `country` accepts only a validated `countries[index]` path.
+  Current title, company, company size/industry/location, profile location/country, and summary each
+  have a separate field-specific source contract. Selected-experience paths must agree with both the
+  shared current-experience policy and importer metadata. Invalid or missing provenance omits the
+  optional top-level derived field instead of guessing from raw payload.
 - The `raw_payload` object itself, contact fields, authentication data, and all non-whitelisted
   source columns are excluded.
 

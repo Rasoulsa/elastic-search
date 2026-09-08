@@ -172,7 +172,7 @@ Response (`200 OK`):
 
 ```json
 {
-  "count": 248,
+  "count": 247,
   "page": 1,
   "page_size": 20,
   "total_pages": 13,

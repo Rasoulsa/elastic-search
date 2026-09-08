@@ -12,7 +12,15 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.db.models import Q
 
+from apps.profiles.experience_policy import select_source_experience
 from apps.profiles.models import Education, Experience, Profile, Skill
+from apps.profiles.provenance import (
+    IMPORTER_METADATA_KEY,
+    MAPPING_VERSION,
+    SOURCE_VALUES_KEY,
+    SUPPORTED_LAYOUT_NAMES,
+)
+from apps.profiles.semantic_values import scalar_anomaly
 
 EXPECTED_HEADER = (
     "full_name",
@@ -97,8 +105,8 @@ EXPECTED_HEADER = (
 NULL_TOKENS = {"", "null", "none", "nan", "n/a", "na"}
 USERNAME_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,254}\Z")
 DATE_RE = re.compile(r"\A(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?\Z")
-COMPANY_SIZE_RE = re.compile(r"\A\d+\s*-\s*\d+\Z")
-NUMBER_RE = re.compile(r"\A\d+(?:\.\d+)?\Z")
+MIN_ACCEPTED_LAYOUT_SCORE = 40
+MIN_ACCEPTED_LAYOUT_MARGIN = 20
 
 
 @dataclass(frozen=True)
@@ -106,45 +114,22 @@ class SourceLayout:
     name: str
     canonical_to_source: tuple[int | None, ...]
 
-    @property
-    def unmapped_source_positions(self) -> tuple[int, ...]:
-        mapped = {position for position in self.canonical_to_source if position is not None}
-        return tuple(position for position in range(len(EXPECTED_HEADER)) if position not in mapped)
 
-
-def _source_layout(name: str, source_order: list[int | None]) -> SourceLayout:
+def _structured_layout(name: str, collection_start: int) -> SourceLayout:
     canonical_to_source: list[int | None] = [None] * len(EXPECTED_HEADER)
-    for source_position, canonical_position in enumerate(source_order):
-        if canonical_position is None or canonical_to_source[canonical_position] is not None:
-            continue
-        canonical_to_source[canonical_position] = source_position
+    for position in range(7):
+        canonical_to_source[position] = position
+    canonical_to_source[EXPECTED_HEADER.index("summary")] = collection_start - 1
+    for offset, canonical_name in enumerate(EXPECTED_HEADER[45:59]):
+        canonical_to_source[EXPECTED_HEADER.index(canonical_name)] = collection_start + offset
     return SourceLayout(name, tuple(canonical_to_source))
 
 
-def _reordered_block_layout(block_start: int) -> SourceLayout:
-    source_order = (
-        list(range(0, block_start - 1))
-        + [44]
-        + list(range(45, 59))
-        + list(range(block_start - 1, 44))
-        + list(range(59, 77))
-    )
-    return _source_layout(f"reordered-block-{block_start}", source_order)
-
-
 SOURCE_LAYOUTS = (
-    _source_layout(
-        "legacy-facebook-appended-77",
-        list(range(0, 7)) + list(range(10, 77)) + list(range(7, 10)),
-    ),
-    *(_reordered_block_layout(start) for start in (25, 28, 39, 40, 41, 44, 45)),
-    _source_layout(
-        "reordered-block-46",
-        list(range(0, 44)) + [None] + [44] + list(range(45, 59)) + list(range(59, 76)),
-    ),
-    _source_layout(
-        "reordered-block-48",
-        list(range(0, 44)) + [None, None, None] + [44] + list(range(45, 59)) + list(range(59, 74)),
+    _structured_layout("legacy-facebook-appended-77", 42),
+    *(
+        _structured_layout(f"reordered-block-{start}", start)
+        for start in (25, 28, 39, 40, 41, 44, 45, 46, 48)
     ),
 )
 
@@ -156,6 +141,7 @@ class ImportStats:
     logical_records: int = 0
     exact_width_records: int = 0
     malformed_width_records: int = 0
+    repeated_header_records: int = 0
     identity_invalid_records: int = 0
     identity_conflict_records: int = 0
     display_name_invalid_records: int = 0
@@ -178,8 +164,10 @@ class ImportStats:
     profiles_created: int = 0
     profiles_updated: int = 0
     profiles_unchanged: int = 0
+    profiles_deleted: int = 0
     skills_created: int = 0
     skills_reused: int = 0
+    skills_deleted: int = 0
     experiences_created: int = 0
     experiences_updated: int = 0
     experiences_unchanged: int = 0
@@ -367,9 +355,56 @@ class Command(BaseCommand):
             raise CommandError("Dataset must be UTF-8 encoded.") from exc
         plans = self._consolidate(candidates, stats)
         with transaction.atomic():
+            corrective_skill_ids = self._broken_mapping_skill_ids()
+            self._remove_known_repeated_header_profile(stats)
             for plan in plans:
                 self._persist_plan(plan, stats)
+            if corrective_skill_ids:
+                stale_skills = Skill.objects.filter(
+                    pk__in=corrective_skill_ids, profiles__isnull=True
+                )
+                stats.skills_deleted = stale_skills.count()
+                stale_skills.delete()
         self._write_summary(stats)
+
+    @staticmethod
+    def _broken_mapping_skill_ids() -> set[int]:
+        skill_ids: set[int] = set()
+        profiles = Profile.objects.prefetch_related("skills").exclude(raw_payload={})
+        for profile in profiles.iterator(chunk_size=500):
+            if Command._has_broken_mapping_provenance(profile.raw_payload):
+                skill_ids.update(skill.pk for skill in profile.skills.all())
+        return skill_ids
+
+    def _remove_known_repeated_header_profile(self, stats) -> None:
+        candidates = list(Profile.objects.select_for_update().order_by("pk"))
+        proven = [profile for profile in candidates if self._is_historical_header_profile(profile)]
+        if len(proven) > 1:
+            raise CommandError("Repeated-header cleanup found multiple proven candidates.")
+        if proven:
+            proven[0].delete()
+            stats.profiles_deleted += 1
+
+    @staticmethod
+    def _is_historical_header_profile(profile: Profile) -> bool:
+        payload = profile.raw_payload
+        if not isinstance(payload, dict):
+            return False
+        if set(payload) != {*EXPECTED_HEADER, "_source_layout"}:
+            return False
+        if payload.get("_source_layout") != "reordered-block-45":
+            return False
+        if any(payload.get(name) != name for name in EXPECTED_HEADER):
+            return False
+        return (
+            profile.public_identifier == "linkedin:id:linkedin_id"
+            and profile.full_name == "full_name"
+            and profile.first_name == "first_name"
+            and profile.last_name == "last_name"
+            and profile.linkedin_id == "linkedin_id"
+            and profile.linkedin_username == "linkedin_username"
+            and profile.profile_url is None
+        )
 
     def _parse_rows(self, reader, header: list[str], stats: ImportStats) -> list[ValidatedRow]:
         candidates: list[ValidatedRow] = []
@@ -387,9 +422,15 @@ class Command(BaseCommand):
                 )
                 continue
             stats.exact_width_records += 1
+            if tuple(row) == EXPECTED_HEADER:
+                stats.repeated_header_records += 1
+                stats.quarantine.append(
+                    (logical_record, physical_start, physical_end, "STRUCTURAL_REPEATED_HEADER")
+                )
+                continue
             layout, reason = self._detect_layout(row)
             if layout is None:
-                if reason == "STRUCTURAL_LAYOUT_AMBIGUOUS":
+                if reason == "AMBIGUOUS_LAYOUT":
                     stats.layout_ambiguous_records += 1
                 else:
                     stats.unknown_layout_records += 1
@@ -412,27 +453,44 @@ class Command(BaseCommand):
     def _detect_layout(self, row) -> tuple[SourceLayout | None, str]:
         matches: list[tuple[SourceLayout, int]] = []
         for layout in SOURCE_LAYOUTS:
-            if not self._layout_has_required_shape(row, layout):
-                continue
-            strong_fields = sum(
-                self._has_nonempty_literal_list(self._mapped(row, layout, name))
-                for name in ("skills", "experience", "education", "profiles")
-            )
-            matches.append((layout, strong_fields))
+            if self._layout_has_required_shape(row, layout):
+                matches.append((layout, self._layout_score(row, layout)))
         if not matches:
-            return None, "STRUCTURAL_LAYOUT"
-        strongest = max(score for _, score in matches)
-        if strongest == 0:
-            header_layout = LAYOUT_BY_NAME["reordered-block-45"]
-            if any(layout == header_layout for layout, _ in matches):
-                return header_layout, ""
-            if len(matches) == 1:
-                return matches[0][0], ""
-            return None, "STRUCTURAL_LAYOUT_AMBIGUOUS"
-        best = [layout for layout, score in matches if score == strongest]
-        if len(best) != 1:
-            return None, "STRUCTURAL_LAYOUT_AMBIGUOUS"
-        return best[0], ""
+            return None, "UNKNOWN_LAYOUT"
+        matches.sort(key=lambda item: (-item[1], item[0].name))
+        strongest = matches[0][1]
+        runner_up = matches[1][1] if len(matches) > 1 else 0
+        if strongest < MIN_ACCEPTED_LAYOUT_SCORE:
+            return None, "UNKNOWN_LAYOUT"
+        if strongest - runner_up < MIN_ACCEPTED_LAYOUT_MARGIN:
+            return None, "AMBIGUOUS_LAYOUT"
+        return matches[0][0], ""
+
+    def _layout_score(self, row, layout) -> int:
+        score = 0
+        skills = self._mapped(row, layout, "skills")
+        if self._literal_list(skills) is not None and self._valid_skills_structure(skills):
+            score += 3
+        experience = self._mapped(row, layout, "experience")
+        parsed_experience = self._literal_list(experience)
+        if parsed_experience is not None and self._valid_nested_structure(experience, "experience"):
+            score += 20 if parsed_experience else 10
+        education = self._mapped(row, layout, "education")
+        parsed_education = self._literal_list(education)
+        if parsed_education is not None and self._valid_nested_structure(education, "education"):
+            score += 20 if parsed_education else 10
+        for name in ("phone_numbers", "location_names", "regions", "countries"):
+            value = self._literal_list(self._mapped(row, layout, name))
+            if value is not None and all(isinstance(item, str) for item in value):
+                score += 2
+        for name in ("emails", "street_addresses", "profiles"):
+            value = self._literal_list(self._mapped(row, layout, name))
+            if value is not None and all(isinstance(item, dict) for item in value):
+                score += 2
+        version, valid = literal_value(self._mapped(row, layout, "version_status"))
+        if valid and isinstance(version, dict):
+            score += 20 if version else 5
+        return score
 
     def _layout_has_required_shape(self, row, layout: SourceLayout) -> bool:
         try:
@@ -453,38 +511,6 @@ class Command(BaseCommand):
                 value = identity_values.get(name) or self._mapped(row, layout, name)
                 if is_null(value) or not isinstance(value, str) or is_structured_text(value):
                     return False
-            if layout.name != "reordered-block-45":
-                if not self._valid_skills_structure(self._mapped(row, layout, "skills")):
-                    return False
-                if not self._valid_nested_structure(
-                    self._mapped(row, layout, "experience"), "experience"
-                ):
-                    return False
-                if not self._valid_nested_structure(
-                    self._mapped(row, layout, "education"), "education"
-                ):
-                    return False
-            else:
-                for name in ("skills", "experience", "education"):
-                    value = self._mapped(row, layout, name)
-                    if is_null(value):
-                        continue
-                    parsed, valid_literal = literal_value(value)
-                    if not valid_literal:
-                        continue
-                    if name == "skills" and not self._valid_skills_structure(value):
-                        return False
-                    if name == "experience" and not self._valid_nested_structure(value, name):
-                        return False
-                    if name == "education" and not self._valid_nested_structure(value, name):
-                        return False
-            summary = self._mapped(row, layout, "summary")
-            if (
-                layout.name != "reordered-block-45"
-                and not is_null(summary)
-                and (not isinstance(summary, str) or is_structured_text(summary))
-            ):
-                return False
         except (IndexError, TypeError):
             return False
         return True
@@ -511,11 +537,6 @@ class Command(BaseCommand):
         parsed, valid_literal = literal_value(value)
         return parsed if valid_literal and isinstance(parsed, list) else None
 
-    @classmethod
-    def _has_nonempty_literal_list(cls, value) -> bool:
-        parsed = cls._literal_list(value)
-        return parsed is not None and bool(parsed)
-
     @staticmethod
     def _mapped(row, layout: SourceLayout, canonical_name: str):
         canonical_position = EXPECTED_HEADER.index(canonical_name)
@@ -532,26 +553,88 @@ class Command(BaseCommand):
             )
             if source_position is not None
         }
-        unmapped = {
-            str(source_position): row[source_position]
-            for source_position in layout.unmapped_source_positions
-            if row[source_position]
+        derived, source_paths, selected_order = self._derive_canonical_scalars(row, layout)
+        payload.update(derived)
+        payload[SOURCE_VALUES_KEY] = {
+            str(source_position): value for source_position, value in enumerate(row)
         }
-        if unmapped:
-            payload["_unmapped_source_values"] = unmapped
-        payload["_source_layout"] = layout.name
+        payload[IMPORTER_METADATA_KEY] = {
+            "mapping_version": MAPPING_VERSION,
+            "layout": layout.name,
+            "canonical_sources": {
+                name: path for name, path in source_paths.items() if payload.get(name)
+            },
+            "selected_experience_source_order": selected_order,
+        }
         return payload
+
+    def _derive_canonical_scalars(
+        self, row, layout
+    ) -> tuple[dict[str, str], dict[str, str], int | None]:
+        experience = self._literal_list(self._mapped(row, layout, "experience")) or []
+        selection = select_source_experience(experience)
+        selected_order, current = selection if selection else (None, {})
+        company = current.get("company") if isinstance(current, dict) else None
+        company = company if isinstance(company, dict) else {}
+        company_location = company.get("location")
+        company_industry = self._source_scalar(company.get("industry"))
+        first_location, first_location_index = self._first_string_with_index(
+            self._mapped(row, layout, "location_names")
+        )
+        first_country, first_country_index = self._first_string_with_index(
+            self._mapped(row, layout, "countries")
+        )
+
+        values = {
+            "job_title": self._nested_name(current.get("title")) if current else "",
+            "job_company_name": self._nested_name(company),
+            "job_company_size": self._source_scalar(company.get("size")),
+            "job_company_industry": company_industry,
+            "job_company_location_name": self._nested_name(company_location),
+            "location_name": first_location,
+            "location_country": first_country,
+        }
+        values["industry"] = company_industry
+        source_paths = {}
+        if selected_order is not None:
+            source_paths.update(
+                {
+                    "job_title": f"experience[{selected_order}].title.name",
+                    "job_company_name": f"experience[{selected_order}].company.name",
+                    "job_company_size": f"experience[{selected_order}].company.size",
+                    "job_company_industry": f"experience[{selected_order}].company.industry",
+                    "job_company_location_name": (
+                        f"experience[{selected_order}].company.location.name"
+                    ),
+                }
+            )
+        if company_industry and selected_order is not None:
+            source_paths["industry"] = f"experience[{selected_order}].company.industry"
+        if first_location_index is not None:
+            source_paths["location_name"] = f"location_names[{first_location_index}]"
+        if first_country_index is not None:
+            source_paths["location_country"] = f"countries[{first_country_index}]"
+        summary_position = layout.canonical_to_source[EXPECTED_HEADER.index("summary")]
+        if summary_position is not None and self._source_scalar(row[summary_position]):
+            source_paths["summary"] = f"{SOURCE_VALUES_KEY}[{summary_position}]"
+        return {name: value or "" for name, value in values.items()}, source_paths, selected_order
+
+    @staticmethod
+    def _source_scalar(value) -> str:
+        return collapsed_text(value) if isinstance(value, str) and not is_null(value) else ""
+
+    @classmethod
+    def _first_string_with_index(cls, raw_value) -> tuple[str, int | None]:
+        values = cls._literal_list(raw_value) or []
+        for index, value in enumerate(values):
+            if isinstance(value, str) and not is_null(value):
+                return collapsed_text(value), index
+        return "", None
 
     def _validate_row(
         self, row, layout, raw_payload, stats, logical_record, physical_start, physical_end
     ) -> ValidatedRow | None:
-        source = {
-            name: row[source_position]
-            for name, source_position in zip(
-                EXPECTED_HEADER, layout.canonical_to_source, strict=False
-            )
-            if source_position is not None
-        }
+        source = raw_payload
         aliases: dict[str, str] = {}
         fields: dict[str, FieldValue] = {}
         for name, canonicalizer in (
@@ -574,6 +657,7 @@ class Command(BaseCommand):
             stats.identity_invalid_records += 1
             return None
 
+        rejected_sources = self._sanitize_metadata(raw_payload, stats)
         for source_name, model_name, max_length in (
             ("full_name", "full_name", 500),
             ("first_name", "first_name", 150),
@@ -582,16 +666,18 @@ class Command(BaseCommand):
             ("location_name", "location", 255),
             ("summary", "summary", None),
         ):
-            fields[model_name] = self._semantic_scalar_field(
-                source[source_name], source_name, max_length, stats
-            )
+            if source_name in rejected_sources:
+                fields[model_name] = FieldValue("invalid")
+            else:
+                fields[model_name] = self._semantic_scalar_field(
+                    source[source_name], source_name, max_length, stats
+                )
         if not any(
             fields[name].state == "value" and fields[name].value
             for name in ("full_name", "first_name", "last_name")
         ):
             stats.display_name_invalid_records += 1
             return None
-        self._sanitize_metadata(raw_payload, stats)
         return ValidatedRow(
             fields=fields,
             aliases=aliases,
@@ -628,40 +714,38 @@ class Command(BaseCommand):
         return field
 
     @staticmethod
-    def _looks_like_date(value: str) -> bool:
-        _, valid = source_date(value, end=False)
-        return valid
+    def _semantic_boundary_violation(field_name: str, value: str) -> bool:
+        return scalar_anomaly(field_name, value) is not None
 
-    @staticmethod
-    def _looks_like_salary_range(value: str) -> bool:
-        parts = re.split(r"\s+-\s+", value)
-        if len(parts) != 2 or not all(re.search(r"\d", part) for part in parts):
-            return False
-        return bool(re.search(r"[$€£]|\b(?:usd|eur|gbp|k|m)\b", value, re.IGNORECASE))
-
-    @classmethod
-    def _semantic_boundary_violation(cls, field_name: str, value: str) -> bool:
-        if is_structured_text(value):
-            return True
-        if field_name in {"job_title", "industry", "location_country", "job_company_name"}:
-            if COMPANY_SIZE_RE.fullmatch(value) or cls._looks_like_date(value):
-                return True
-            if cls._looks_like_salary_range(value):
-                return True
-        return field_name == "job_company_name" and bool(NUMBER_RE.fullmatch(value))
-
-    def _sanitize_metadata(self, raw_payload, stats) -> None:
-        invalid_values = {}
-        for field_name in ("industry", "job_company_name", "location_country"):
+    def _sanitize_metadata(self, raw_payload, stats) -> set[str]:
+        rejected_sources = set()
+        importer_metadata = raw_payload.get(IMPORTER_METADATA_KEY)
+        canonical_sources = (
+            importer_metadata.get("canonical_sources")
+            if isinstance(importer_metadata, dict)
+            else {}
+        )
+        for field_name in (
+            "industry",
+            "job_title",
+            "job_company_name",
+            "job_company_industry",
+            "job_company_location_name",
+            "location_name",
+            "location_country",
+            "summary",
+        ):
             value = raw_payload.get(field_name)
             if not isinstance(value, str) or is_null(value):
                 continue
-            if self._semantic_boundary_violation(field_name, value):
-                invalid_values[field_name] = value
+            reason = scalar_anomaly(field_name, value)
+            if reason:
                 raw_payload[field_name] = ""
                 stats.semantic_warnings[f"{field_name}_boundary"] += 1
-        if invalid_values:
-            raw_payload["_invalid_source_values"] = invalid_values
+                rejected_sources.add(field_name)
+                if isinstance(canonical_sources, dict):
+                    canonical_sources.pop(field_name, None)
+        return rejected_sources
 
     def _validate_skills(self, raw_value, stats) -> FieldValue:
         if is_null(raw_value):
@@ -728,6 +812,9 @@ class Command(BaseCommand):
         required = self._nested_name(item.get(required_key))
         if required is None:
             return None
+        if kind == "experience" and scalar_anomaly("job_title", required):
+            stats.invalid_experience_fields["experience.title"] += 1
+            return None
         if len(required) > 255:
             stats.oversized_fields[f"{kind}.{required_key}"] += 1
             return None
@@ -738,6 +825,9 @@ class Command(BaseCommand):
             company = self._nested_name(item.get("company"))
             if company is None:
                 return None
+            if scalar_anomaly("job_company_name", company):
+                stats.invalid_experience_fields["experience.company"] += 1
+                return None
             if len(company) > 255:
                 stats.oversized_fields["experience.company"] += 1
                 return None
@@ -745,8 +835,16 @@ class Command(BaseCommand):
             location = self._list_field(
                 item.get("location_names"), ", ", 255, "experience.location_names", stats
             )
+            if location.state == "value" and scalar_anomaly(
+                "location_name", ", ".join(location.value)
+            ):
+                stats.invalid_experience_fields["experience.location_names"] += 1
+                location = FieldValue("invalid")
             self._put_nested_field(values, invalid_fields, "location_names", "location", location)
             summary = self._scalar_nested_field(item.get("summary"), "experience.summary", stats)
+            if summary.state == "value" and scalar_anomaly("summary", summary.value):
+                stats.invalid_experience_fields["experience.summary"] += 1
+                summary = FieldValue("invalid")
             self._put_nested_field(values, invalid_fields, "summary", "description", summary)
             self._add_dates(item, values, invalid_fields, "experience", stats)
         else:
@@ -933,8 +1031,16 @@ class Command(BaseCommand):
             stats.profiles_created += 1
         else:
             changed_fields = []
+            repairing_broken_mapping = self._has_broken_mapping_provenance(profile.raw_payload)
             for name, field_value in plan.fields.items():
                 if field_value.state == "invalid":
+                    if (
+                        repairing_broken_mapping
+                        and name in {"headline", "location", "summary"}
+                        and getattr(profile, name) != ""
+                    ):
+                        setattr(profile, name, "")
+                        changed_fields.append(name)
                     continue
                 value = self._stored_value(name, field_value)
                 if getattr(profile, name) != value:
@@ -955,6 +1061,18 @@ class Command(BaseCommand):
         self._write_skills(profile, plan.skills, stats)
         self._write_nested(profile, plan.experience, "experience", stats)
         self._write_nested(profile, plan.education, "education", stats)
+
+    @staticmethod
+    def _has_broken_mapping_provenance(payload) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        if payload.get("_source_layout") not in SUPPORTED_LAYOUT_NAMES:
+            return False
+        if any(key in payload for key in (IMPORTER_METADATA_KEY, SOURCE_VALUES_KEY)):
+            return False
+        if set(payload) - {*EXPECTED_HEADER, "_source_layout", "_unmapped_source_values"}:
+            return False
+        return len(set(payload).intersection(EXPECTED_HEADER)) >= 4
 
     def _stored_value(self, name, field_value):
         if field_value.state == "empty" and name in {
@@ -1057,6 +1175,7 @@ class Command(BaseCommand):
             "logical_records",
             "exact_width_records",
             "malformed_width_records",
+            "repeated_header_records",
             "unknown_layout_records",
             "layout_ambiguous_records",
             "identity_invalid_records",
@@ -1089,8 +1208,10 @@ class Command(BaseCommand):
             "profiles_created",
             "profiles_updated",
             "profiles_unchanged",
+            "profiles_deleted",
             "skills_created",
             "skills_reused",
+            "skills_deleted",
             "experiences_created",
             "experiences_updated",
             "experiences_unchanged",

@@ -24,6 +24,9 @@ dataset rows, profile content, credentials, and tokens are intentionally omitted
 
 ## Results
 
+The dataset counts below are historical Day 2 evidence. The repeated-header pseudo-profile was
+identified and corrected during Day 3; the current real-profile baseline is 247.
+
 - Docker Compose configuration validated successfully.
 - Backend and frontend images built successfully.
 - PostgreSQL, Elasticsearch, backend, and frontend became healthy.
@@ -67,4 +70,5 @@ Manual sanitized API checks confirmed:
 - An explicit index rebuild is required after PostgreSQL data changes.
 - Delete-and-recreate rebuilds cause temporary search unavailability.
 - Deep pagination beyond the 10,000-result window is rejected.
-- React profile-search functionality remains deferred to Day 3.
+- React profile-search functionality was deferred at this historical Day 2 checkpoint and was
+  implemented during Day 3.

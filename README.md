@@ -83,15 +83,16 @@ make import
 ```
 
 This runs `python manage.py import_profiles --path /data/profiles.txt` in the backend container.
-The importer detects the supplied header-aligned and named legacy/reordered 77-value layouts using
-structural signatures before it parses, normalizes, consolidates duplicate aliases, and writes one
-diff-aware import plan per profile to PostgreSQL. Width-only validation is insufficient for this
-dataset; malformed-width and ambiguous rows are quarantined with sanitized reason codes. Semantic
-boundaries prevent shifted lists, dates, salary ranges, and company-size values from entering scalar
-profile fields. A repeated unchanged import produces zero profile/child creates, updates, or deletes
-while preserving profile, child, and skill-link primary keys. Rebuild Elasticsearch explicitly with
-`make rebuild-index` after a corrected import. Profiles migration `0003` is the latest schema
-migration.
+The importer detects ten named structured-block layouts before it parses, normalizes, consolidates
+duplicate aliases, and writes one diff-aware plan per profile to PostgreSQL. Width or block start
+alone is not treated as complete scalar alignment. Canonical job/company fields come from explicitly
+keyed experience data; profile location/country come from explicitly named lists; ambiguous source
+positions remain private positional data. Malformed widths, repeated headers, and ambiguous layouts
+are quarantined with sanitized reason codes. Shared semantic boundaries reject displaced collections,
+phones, numeric/date values, and ranges. A repeated corrected import produces zero creates, updates,
+or deletes while preserving valid profile, child, and skill-link primary keys. Rebuild Elasticsearch
+explicitly with `make rebuild-index` after correction. Profiles migration `0003` remains current;
+this data correction requires no schema migration.
 
 Create the empty versioned Elasticsearch index or rebuild it completely from PostgreSQL with:
 

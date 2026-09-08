@@ -30,7 +30,7 @@ flowchart LR
   protected search, and protected profile detail.
 - `backend` runs Django and Django REST Framework, including health, JWT authentication,
   OpenAPI/Swagger documentation, Elasticsearch profile search, and PostgreSQL profile detail.
-- `db` runs PostgreSQL 16, where application profile data will be canonical.
+- `db` runs PostgreSQL 16, where application profile data is canonical.
 - `elasticsearch` runs Elasticsearch 8.17 and stores the derived `linkedin_profiles_v1` index.
   Django integrates through one small gateway for index lifecycle, bulk operations, and search.
 
@@ -109,17 +109,21 @@ python manage.py import_profiles --path /data/profiles.txt
 ```
 
 The importer requires the exact 77-column CSV header as canonical vocabulary, then detects each
-exact-width row against explicit structural source-layout contracts. The header and row width alone
-are not treated as alignment evidence: the private dataset contains a Facebook-appended legacy order
-and several deterministic collection-block reorderings. URL-like values, list/dictionary shapes,
-experience/education object keys, dates, numeric fields, and version-status structures select one
-named layout; ties are quarantined as ambiguous. Malformed-width records are never repaired.
+exact-width row against one of ten structural collection-block contracts. Header and width alone are
+not alignment evidence. The second Day 3 investigation proved that rows sharing a collection-block
+start do not necessarily share scalar positions, so the importer no longer invents a complete
+permutation for those positions. Identity uses the stable source prefix; skills, experience,
+education, summary, and location lists use their structural block; current job/company fields use
+explicit keys in the primary/first experience object. Ties, unsupported structures, repeated
+headers, and malformed widths are quarantined.
 
-After layout mapping, semantic boundary validation prevents structured values, company-size ranges,
-dates, salary ranges, and numeric IDs from entering canonical job-title, industry, country, summary,
-or company fields. This uses structural rules rather than a broad country/title dictionary. Invalid
-values preserve earlier valid duplicate values under the existing tri-state contract. The original
-source row remains private in `raw_payload`; canonical payload keys contain mapped fields only.
+After canonicalization, semantic boundary validation prevents serialized collections, numeric/date
+values, phone shapes, salary ranges, and company-size ranges from crossing into incompatible scalar
+fields. This uses structural rules rather than broad dictionaries. The original row remains private
+under positional `raw_payload._source_values`; the strict importer-owned `_importer` namespace
+records only supported mapping version, layout, selected source order, and allowlisted canonical
+paths. A mapping-version marker permits one bounded cleanup of scalar and skill state written by the
+known broken mapper while ordinary invalid updates continue to preserve valid existing values.
 
 The importer then parses, normalizes, and consolidates duplicates through all canonical aliases before
 one transaction persists one final plan per profile. Complete valid nested lists synchronize source
@@ -148,9 +152,11 @@ transport, missing-index, and malformed-response failures become the stable `sea
 `GET /api/v1/profiles/{id}/` does not pass through this boundary. It selects the profile from
 PostgreSQL and prefetches skills, experiences, and education in three deterministic queries. It
 therefore remains operational during an Elasticsearch outage and excludes the raw import payload
-and importer bookkeeping from serialization. Its scalar company, industry, and country values are
-explicitly allowlisted from imported payload keys because dedicated relational columns do not yet
-exist; arbitrary nested payload values and contact fields are never exposed.
+and importer bookkeeping from serialization. Search and detail projections use scalar company,
+industry, and country payload keys only when the strict `_importer` contract proves that importer
+canonicalization produced them. Both boundaries independently apply structural validation to model,
+relation, and allowlisted metadata values; arbitrary raw positions, rejected values, and contact
+fields are never exposed or indexed.
 
 No Django signals or application-startup hooks synchronize profile writes. This keeps PostgreSQL
 writes independent from Elasticsearch and makes index state explicitly reproducible and observable.

@@ -54,11 +54,12 @@ temporary synthetic reviewer account, which was removed after verification:
 - With Elasticsearch stopped, search returned the stable `503` code while detail remained `200`.
 - After Elasticsearch became healthy again, search returned `200` with the documented shape.
 
-A subsequent manual browser acceptance check found a live-integration defect: valid empty-string
-`industries` and `countries` facet buckets were rejected by the frontend runtime validator. The
-validator now accepts those backend-valid strings, while normalized controls omit blank options.
-The original Day 3 verification captured no browser screenshots or visual 375-pixel interaction
-evidence. A complete desktop, tablet, and mobile visual pass remains outstanding.
+The final human browser acceptance completed after the live integration correction. At desktop,
+approximately 768px, and approximately 375px widths, registration, login, protected-route
+authentication, and logout succeeded. The match-all view rendered the corrected 247-profile result
+count with meaningful corrected facets and result cards; simultaneous filters, URL persistence,
+pagination, reload, Back/Forward navigation, detail and return navigation, and Elasticsearch outage
+and recovery all behaved as documented. No horizontal overflow or console errors were observed.
 
 ## Accepted limitations and remaining risk
 
@@ -66,5 +67,4 @@ evidence. A complete desktop, tablet, and mobile visual pass remains outstanding
 - Search is explicit-submit and intentionally has no autocomplete, live debounce, fuzzy matching,
   semantic search, or saved searches.
 - ISO dates are displayed without locale formatting.
-- A final human visual pass at mobile, tablet, and desktop widths remains advisable because browser
-  automation was unavailable during this verification.
+- The final human visual pass covered desktop, approximately 768px, and approximately 375px widths.

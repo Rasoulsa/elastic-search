@@ -32,9 +32,36 @@ def complete_profile(db):
         location="Helsinki",
         summary="Builds reliable systems.",
         raw_payload={
+            "experience": repr(
+                [
+                    {
+                        "title": {"name": "Backend Engineer"},
+                        "company": {"name": "Example Company", "industry": "Software"},
+                    }
+                ]
+            ),
+            "location_names": "['Helsinki']",
+            "countries": "['Finland']",
+            "location_name": "Helsinki",
             "industry": "Software",
             "location_country": "Finland",
+            "job_title": "Backend Engineer",
             "job_company_name": "Example Company",
+            "summary": "Builds reliable systems.",
+            "_source_values": {"44": "Builds reliable systems."},
+            "_importer": {
+                "mapping_version": "canonical-v2",
+                "layout": "reordered-block-45",
+                "canonical_sources": {
+                    "industry": "experience[0].company.industry",
+                    "job_title": "experience[0].title.name",
+                    "job_company_name": "experience[0].company.name",
+                    "location_country": "countries[0]",
+                    "location_name": "location_names[0]",
+                    "summary": "_source_values[44]",
+                },
+                "selected_experience_source_order": 0,
+            },
             "email": "private@example.test",
             "internal_fingerprint": "must-not-appear",
         },
@@ -81,7 +108,7 @@ def test_profile_detail_returns_public_fields_and_nested_relations(
         "linkedin_username": "example-profile",
         "profile_url": "https://www.linkedin.com/in/example-profile",
         "full_name": "Example Person",
-        "job_title": "Principal Engineer",
+        "job_title": "Backend Engineer",
         "company": "Example Company",
         "industry": "Software",
         "location": "Helsinki",
@@ -164,6 +191,169 @@ def test_profile_detail_uses_bounded_query_count(
         response = authenticated_client.get(reverse("profile-detail", args=[complete_profile.pk]))
 
     assert response.status_code == 200
+
+
+@pytest.mark.django_db
+def test_profile_detail_omits_structurally_corrupt_scalar_fallbacks(authenticated_client):
+    profile = Profile.objects.create(
+        public_identifier="synthetic-corrupt-detail",
+        headline="201-500",
+        location="$50000 - $70000",
+        summary="[{'school': {'name': 'Synthetic'}}]",
+        raw_payload={
+            "industry": "+1 (555) 010-0100",
+            "location_country": "12.75",
+            "job_company_name": "201-500",
+            "_canonical_sources": {
+                "industry": "synthetic",
+                "location_country": "synthetic",
+                "job_company_name": "synthetic",
+            },
+        },
+    )
+
+    response = authenticated_client.get(reverse("profile-detail", args=[profile.pk]))
+
+    assert response.status_code == 200
+    assert response.json()["job_title"] == ""
+    assert response.json()["company"] == ""
+    assert response.json()["industry"] == ""
+    assert response.json()["location"] == ""
+    assert response.json()["country"] == ""
+    assert response.json()["summary"] == ""
+
+
+@pytest.mark.django_db
+def test_profile_detail_omits_derived_values_when_importer_provenance_is_invalid(
+    authenticated_client,
+):
+    profile = Profile.objects.create(
+        public_identifier="invalid-detail-provenance",
+        location="Lisbon",
+        raw_payload={
+            "experience": repr(
+                [
+                    {
+                        "title": {"name": "Engineer"},
+                        "company": {"name": "Example Co", "industry": "Software"},
+                    }
+                ]
+            ),
+            "industry": "Software",
+            "job_company_name": "Example Co",
+            "_importer": {
+                "mapping_version": "canonical-v1",
+                "layout": "reordered-block-45",
+                "canonical_sources": {"industry": "experience[0].company.industry"},
+                "selected_experience_source_order": 0,
+            },
+        },
+    )
+    Experience.objects.create(profile=profile, title="Engineer", company="Example Co")
+
+    response = authenticated_client.get(reverse("profile-detail", args=[profile.pk]))
+
+    assert response.status_code == 200
+    assert response.json()["company"] == ""
+    assert response.json()["industry"] == ""
+    assert response.json()["country"] == ""
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("field", "path", "value", "response_field"),
+    [
+        ("industry", "experience[0].company.name", "Example Company", "industry"),
+        ("job_company_name", "experience[0].company.industry", "Software", "company"),
+        ("job_title", "experience[0].company.name", "Example Company", "job_title"),
+        ("location_country", "experience[0].company.size", "201-500", "country"),
+        ("location_name", "experience[0].company.size", "201-500", "location"),
+        ("summary", "experience[0].company.name", "Example Company", "summary"),
+        ("job_title", "experience[1].title.name", "Earlier Engineer", "job_title"),
+        ("industry", "location_names[0]", "Helsinki", "industry"),
+    ],
+)
+def test_profile_detail_rejects_cross_wired_provenance(
+    authenticated_client, field, path, value, response_field
+):
+    payload = {
+        "experience": repr(
+            [
+                {
+                    "is_primary": True,
+                    "title": {"name": "Backend Engineer"},
+                    "company": {
+                        "name": "Example Company",
+                        "industry": "Software",
+                        "size": "201-500",
+                    },
+                },
+                {
+                    "title": {"name": "Earlier Engineer"},
+                    "company": {"name": "Earlier Company", "industry": "Consulting"},
+                    "end_date": "2020-01-01",
+                },
+            ]
+        ),
+        "location_names": "['Helsinki']",
+        "countries": "['Finland']",
+        field: value,
+        "_importer": {
+            "mapping_version": "canonical-v2",
+            "layout": "reordered-block-45",
+            "canonical_sources": {field: path},
+            "selected_experience_source_order": 0,
+        },
+    }
+    profile = Profile.objects.create(
+        public_identifier=f"cross-wired-detail-{field}-{response_field}", raw_payload=payload
+    )
+
+    response = authenticated_client.get(reverse("profile-detail", args=[profile.pk]))
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body[response_field] == ""
+    assert "detail" not in body
+    assert "_importer" not in repr(body)
+    assert "canonical_sources" not in repr(body)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("case", ["wrong-type", "unknown-field"])
+def test_profile_detail_invalid_provenance_types_and_fields_fail_closed(authenticated_client, case):
+    payload = {
+        "experience": repr(
+            [
+                {
+                    "is_primary": True,
+                    "title": {"name": "Engineer"},
+                    "company": {"name": "Example", "size": 500},
+                }
+            ]
+        ),
+        "job_company_size": 500,
+        "_importer": {
+            "mapping_version": "canonical-v2",
+            "layout": "reordered-block-45",
+            "canonical_sources": {"job_company_size": "experience[0].company.size"},
+            "selected_experience_source_order": 0,
+        },
+    }
+    if case == "unknown-field":
+        payload["unknown_field"] = "Example"
+        payload["_importer"]["canonical_sources"]["unknown_field"] = "experience[0].company.name"
+    profile = Profile.objects.create(
+        public_identifier=f"invalid-detail-{case}", raw_payload=payload
+    )
+
+    response = authenticated_client.get(reverse("profile-detail", args=[profile.pk]))
+    body = response.json()
+
+    assert response.status_code == 200
+    assert all(body[name] == "" for name in ("job_title", "company", "industry", "country"))
+    assert "detail" not in body
+    assert "_importer" not in repr(body)
 
 
 def test_openapi_documents_profile_detail_authentication_and_responses():

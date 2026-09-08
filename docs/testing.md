@@ -91,15 +91,40 @@ make rebuild-index
 make rebuild-index
 ```
 
-The Day 3 mapping remediation observed 336 logical records, 283 exact-width records, 53
-`STRUCTURAL_WIDTH` quarantines, 283 accepted rows, 35 duplicate rows, and 248 unique profiles. Ten
-deterministic layout contracts were selected; no exact-width row was ambiguous after structural
-validation. The final second import reported 248 unchanged profiles, 1,775 unchanged experiences,
-707 unchanged education rows, and zero creates, updates, and deletes. Do not encode these private
-dataset counts as automated test expectations. Synthetic tests cover header and legacy mapping,
-every recognized layout contract, ambiguity and malformed-width quarantine, semantic boundaries,
-duplicate consolidation, identity conflict handling, tri-state scalar and collection updates, skills
-policy, rollback behavior, and database-change counters.
+The second Day 3 mapping investigation first imported into a clean isolated SQLite database. Corrected
+verification observed 336 logical records, 283 exact-width records, 53 `STRUCTURAL_WIDTH`
+quarantines, one `STRUCTURAL_REPEATED_HEADER`, 282 accepted rows, 35 duplicates, and 247 unique real
+profiles. The final isolated second import reported 247 unchanged profiles, 1,775 unchanged
+experiences, 707 unchanged education rows, and zero creates, updates, or deletes. Do not encode these
+private dataset counts as automated test expectations.
+
+Final live `canonical-v2` verification completed for PostgreSQL and Elasticsearch. The first import
+found 247 unique profiles: 230 were updated to the latest provenance contract, 17 were unchanged,
+and zero were created or deleted. It quarantined one repeated header and 53 malformed-width records;
+unknown and ambiguous layout counts were both zero. Three summary-boundary warnings caused invalid
+summaries to be omitted safely rather than mapped from unrelated fields.
+
+The second import left all 247 profiles unchanged, with zero creates, updates, or deletes; all 1,775
+experiences and 707 education records were unchanged. Both explicit Elasticsearch rebuilds reported
+`attempted=247 indexed=247 failed=0 unprocessed=0`, and the index count remained 247. Final human
+browser acceptance then completed at desktop, approximately 768px, and approximately 375px widths;
+authenticated rendering, corrected facets/results, simultaneous filters, URL persistence, pagination,
+reload, Back/Forward, detail/return navigation, Elasticsearch outage/recovery, logout, no horizontal
+overflow, and no console errors were confirmed. Older screenshots that exposed corruption do not
+satisfy that final check.
+
+Synthetic tests cover all ten layout contracts, scalar extraction from keyed collections, canonical
+raw-payload provenance, repeated-header quarantine, malformed/ambiguous layouts, semantic anomaly
+classes, normal tri-state preservation versus provenance-aware cleanup, bounded orphan-skill cleanup,
+full persisted-state idempotency, stable timestamps/IDs, projection fallback rejection, privacy-safe
+output, rollback behavior, and truthful counters.
+
+Provenance tests independently enumerate each canonical field's permitted parsed path. Equality is
+necessary but cannot authorize a path from another field. Tests reject cross-wired paths, malformed
+indices and traversal-like syntax, wrong destination types, unknown fields, and any current-experience
+index that disagrees with importer metadata or the shared selection policy. These failures omit the
+optional projection/detail field and do not expose raw values, provenance metadata, or exception
+details.
 
 This defect was discovered during Day 3 browser acceptance. The safe sequence is backup, corrected
 PostgreSQL import, second-run idempotency check, two explicit Elasticsearch rebuilds, sanitized
@@ -113,8 +138,8 @@ curl --fail http://localhost:9200/linkedin_profiles_v1/_count
 curl --fail http://localhost:9200/linkedin_profiles_v1/_mapping
 ```
 
-Run `make rebuild-index` twice and confirm both runs report `attempted=248 indexed=248 failed=0
-unprocessed=0`, the count is unchanged, and sanitized document-ID sets match PostgreSQL. For
+Run `make rebuild-index` twice and confirm both runs report the current PostgreSQL profile count with
+`failed=0 unprocessed=0`, the count is unchanged, and sanitized document-ID sets match PostgreSQL. For
 structural inspection, request only aggregate/facet data or an explicit safe `_source` allowlist;
 do not print complete documents, raw payloads, contacts, summaries, or profile identities from the
 private dataset.
