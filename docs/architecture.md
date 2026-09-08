@@ -108,14 +108,25 @@ requests require Elasticsearch. PostgreSQL and Elasticsearch data use named volu
 python manage.py import_profiles --path /data/profiles.txt
 ```
 
-The importer requires the exact 77-column CSV header, skips malformed-width records without repair,
-and reports logical/physical row ranges using reason codes. It parses and normalizes every accepted
-row before consolidating duplicates through all canonical aliases. Only then does one transaction
-persist one final plan per profile. Tri-state values distinguish valid values, explicit empties, and
-invalid input. Complete valid nested lists synchronize source positions and remove stale rows;
-partial lists preserve invalid/unmatched positions, while invalid top-level collections are kept
-unchanged. Diff-aware writes preserve unchanged profile timestamps and retained child primary keys.
-Database counters report actual creates, updates, unchanged rows, and deletes.
+The importer requires the exact 77-column CSV header as canonical vocabulary, then detects each
+exact-width row against explicit structural source-layout contracts. The header and row width alone
+are not treated as alignment evidence: the private dataset contains a Facebook-appended legacy order
+and several deterministic collection-block reorderings. URL-like values, list/dictionary shapes,
+experience/education object keys, dates, numeric fields, and version-status structures select one
+named layout; ties are quarantined as ambiguous. Malformed-width records are never repaired.
+
+After layout mapping, semantic boundary validation prevents structured values, company-size ranges,
+dates, salary ranges, and numeric IDs from entering canonical job-title, industry, country, summary,
+or company fields. This uses structural rules rather than a broad country/title dictionary. Invalid
+values preserve earlier valid duplicate values under the existing tri-state contract. The original
+source row remains private in `raw_payload`; canonical payload keys contain mapped fields only.
+
+The importer then parses, normalizes, and consolidates duplicates through all canonical aliases before
+one transaction persists one final plan per profile. Complete valid nested lists synchronize source
+positions and remove stale rows; partial lists preserve invalid/unmatched positions, while invalid
+top-level collections are kept unchanged. Diff-aware writes preserve unchanged profile timestamps and
+retained child primary keys. Database and layout counters report actual creates, updates, unchanged
+rows, deletes, quarantine reasons, and field-level warnings.
 
 ## Search-index boundary
 

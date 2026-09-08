@@ -78,8 +78,10 @@ docker compose config -q
 docker compose run --rm backend python manage.py spectacular --validate
 ```
 
-Run the mounted private dataset twice for operational verification. The importer prints counts and
-row-range reason codes only; it never prints source records or profile values:
+Back up the PostgreSQL database or volume before correcting local imported state. Do not reset or
+delete the named volumes for this check. Run the mounted private dataset twice for operational
+verification. The importer prints counts and row-range reason codes only; it never prints source
+records or profile values:
 
 ```bash
 make migrate
@@ -89,9 +91,19 @@ make rebuild-index
 make rebuild-index
 ```
 
-Do not encode the private dataset's observed counts as automated test expectations. Synthetic tests
-cover parsing, normalization, duplicate consolidation, identity conflict handling, tri-state scalar
-and collection updates, skills policy, rollback behavior, and database-change counters.
+The Day 3 mapping remediation observed 336 logical records, 283 exact-width records, 53
+`STRUCTURAL_WIDTH` quarantines, 283 accepted rows, 35 duplicate rows, and 248 unique profiles. Ten
+deterministic layout contracts were selected; no exact-width row was ambiguous after structural
+validation. The final second import reported 248 unchanged profiles, 1,775 unchanged experiences,
+707 unchanged education rows, and zero creates, updates, and deletes. Do not encode these private
+dataset counts as automated test expectations. Synthetic tests cover header and legacy mapping,
+every recognized layout contract, ambiguity and malformed-width quarantine, semantic boundaries,
+duplicate consolidation, identity conflict handling, tri-state scalar and collection updates, skills
+policy, rollback behavior, and database-change counters.
+
+This defect was discovered during Day 3 browser acceptance. The safe sequence is backup, corrected
+PostgreSQL import, second-run idempotency check, two explicit Elasticsearch rebuilds, sanitized
+count/ID/facet checks, and then browser acceptance again.
 
 For manual index verification, compare the canonical and derived counts without printing documents:
 
@@ -101,9 +113,11 @@ curl --fail http://localhost:9200/linkedin_profiles_v1/_count
 curl --fail http://localhost:9200/linkedin_profiles_v1/_mapping
 ```
 
-Run `make rebuild-index` twice and confirm the count is unchanged. For structural inspection, request
-one document with an explicit safe `_source` allowlist such as `profile_id,full_name,job_title`; do
-not print the complete source document from the private dataset.
+Run `make rebuild-index` twice and confirm both runs report `attempted=248 indexed=248 failed=0
+unprocessed=0`, the count is unchanged, and sanitized document-ID sets match PostgreSQL. For
+structural inspection, request only aggregate/facet data or an explicit safe `_source` allowlist;
+do not print complete documents, raw payloads, contacts, summaries, or profile identities from the
+private dataset.
 
 The migration suite uses historical models from Django's migration app registry. It exercises a
 fresh profiles schema from zero through the latest migration (`0003`) and upgrades an initial `0001`

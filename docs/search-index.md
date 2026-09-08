@@ -21,6 +21,13 @@ Backend startup, migrations, profile imports, authentication, PostgreSQL profile
 backend tests require PostgreSQL but not a live Elasticsearch service. Explicit index commands and
 profile search require Elasticsearch.
 
+After any corrected dataset import, rebuild `linkedin_profiles_v1` from PostgreSQL. The index is
+derived state and must not be used to repair source data. During the Day 3 acceptance remediation,
+two consecutive rebuilds each indexed 248 of 248 profiles with zero failures; sanitized PostgreSQL
+and Elasticsearch document IDs matched, and match-all returned 248 hits. Country and industry facet
+buckets contained no date, salary-range, or serialized-list artifacts, job-title buckets contained
+no company-size/date artifacts, and all indexed summaries were scalar strings.
+
 ## Explicit mapping
 
 Dynamic fields are rejected. Exact-filter subfields retain their original display value in `_source`

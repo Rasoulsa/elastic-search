@@ -10,6 +10,8 @@ from django.db import DatabaseError, IntegrityError, transaction
 
 from apps.profiles.management.commands.import_profiles import (
     EXPECTED_HEADER,
+    LAYOUT_BY_NAME,
+    SOURCE_LAYOUTS,
     Command,
     ImportStats,
 )
@@ -40,6 +42,15 @@ def write_csv(path, rows, header=EXPECTED_HEADER):
         writer = csv.writer(handle)
         writer.writerow(header)
         writer.writerows(rows)
+
+
+def source_row_for_layout(canonical_row, layout_name):
+    layout = LAYOUT_BY_NAME[layout_name]
+    source_row = [""] * len(EXPECTED_HEADER)
+    for canonical_position, source_position in enumerate(layout.canonical_to_source):
+        if source_position is not None:
+            source_row[source_position] = canonical_row[canonical_position]
+    return source_row
 
 
 def run_import(path):
@@ -119,6 +130,163 @@ def test_header_and_missing_file_fail(tmp_path):
         run_import(invalid)
     with pytest.raises(CommandError, match="Dataset file not found"):
         run_import(tmp_path / "missing.csv")
+
+
+@pytest.mark.django_db
+def test_malformed_width_is_quarantined_without_persistence(tmp_path):
+    path = tmp_path / "profiles.txt"
+    write_csv(path, [make_row()[:-1]])
+
+    output = run_import(path)
+
+    assert Profile.objects.count() == 0
+    assert "malformed_width_records: 1" in output
+    assert "STRUCTURAL_WIDTH" in output
+
+
+@pytest.mark.django_db
+def test_legacy_reordered_layout_maps_canonical_fields_and_children(tmp_path):
+    path = tmp_path / "profiles.txt"
+    canonical_row = make_row(
+        industry="Software",
+        job_title="Principal Engineer",
+        job_company_name="Analytical Engines",
+        job_company_size="201-500",
+        location_name="London",
+        location_country="United Kingdom",
+        summary="Builds reliable machines.",
+        skills="['Python', 'SQL']",
+        experience=str([experience_item("Principal Engineer")]),
+        education=str([education_item("University")]),
+    )
+    write_csv(path, [source_row_for_layout(canonical_row, "legacy-facebook-appended-77")])
+
+    output = run_import(path)
+    profile = Profile.objects.get()
+
+    assert profile.headline == "Principal Engineer"
+    assert profile.location == "London"
+    assert profile.summary == "Builds reliable machines."
+    assert list(profile.skills.values_list("name", flat=True)) == ["python", "sql"]
+    assert profile.experiences.get().title == "Principal Engineer"
+    assert profile.educations.get().school == "University"
+    assert profile.raw_payload["industry"] == "Software"
+    assert profile.raw_payload["job_company_name"] == "Analytical Engines"
+    assert profile.raw_payload["job_company_size"] == "201-500"
+    assert profile.raw_payload["location_country"] == "United Kingdom"
+    assert "legacy-facebook-appended-77" in output
+
+
+@pytest.mark.parametrize("layout_name", [layout.name for layout in SOURCE_LAYOUTS])
+def test_every_recognized_layout_maps_structured_fields_deterministically(layout_name):
+    canonical_row = make_row(
+        summary="A scalar summary",
+        skills="['Python']",
+        experience=str([experience_item()]),
+        education=str([education_item()]),
+    )
+
+    row = source_row_for_layout(canonical_row, layout_name)
+    layout, reason = Command()._detect_layout(row)
+
+    assert reason == ""
+    assert layout.name == layout_name
+
+
+@pytest.mark.django_db
+def test_corrected_import_repairs_existing_mis_mapped_profile_and_is_idempotent(tmp_path):
+    profile = Profile.objects.create(
+        public_identifier="linkedin:id:123",
+        full_name="Ada Lovelace",
+        first_name="Ada",
+        last_name="Lovelace",
+        headline="201-500",
+        summary=str([education_item("Wrong Summary")]),
+        linkedin_id="123",
+        linkedin_username="ada.lovelace",
+        profile_url="https://www.linkedin.com/in/ada.lovelace",
+        raw_payload={
+            "industry": "[]",
+            "job_company_name": "201-500",
+            "location_country": "2020-12-01",
+        },
+    )
+    old_skill = Skill.objects.create(name="united states")
+    profile.skills.add(old_skill)
+    path = tmp_path / "profiles.txt"
+    canonical_row = make_row(
+        industry="Software",
+        job_title="Principal Engineer",
+        job_company_name="Analytical Engines",
+        location_name="London",
+        location_country="United Kingdom",
+        summary="Corrected summary",
+        skills="['Python']",
+        experience=str([experience_item("Principal Engineer")]),
+        education=str([education_item("University")]),
+    )
+    write_csv(path, [source_row_for_layout(canonical_row, "legacy-facebook-appended-77")])
+
+    first = run_import(path)
+    repaired = Profile.objects.get(pk=profile.pk)
+    second = run_import(path)
+
+    assert repaired.headline == "Principal Engineer"
+    assert repaired.summary == "Corrected summary"
+    assert repaired.raw_payload["industry"] == "Software"
+    assert list(repaired.skills.values_list("name", flat=True)) == ["python"]
+    assert count(first, "profiles_updated") == 1
+    assert count(second, "profiles_created") == 0
+    assert count(second, "profiles_updated") == 0
+    assert count(second, "experiences_created") == 0
+    assert count(second, "education_created") == 0
+
+
+@pytest.mark.django_db
+def test_semantic_boundaries_reject_shift_signatures_without_broad_dictionaries(tmp_path):
+    path = tmp_path / "profiles.txt"
+    write_csv(
+        path,
+        [
+            make_row(
+                job_title="201-500",
+                industry="[]",
+                job_company_name="2020-12-01",
+                location_country="$50k - $70k",
+                summary=str([education_item("University")]),
+                skills="['United States', 'Leadership']",
+            )
+        ],
+    )
+
+    output = run_import(path)
+    profile = Profile.objects.get()
+
+    assert profile.headline == ""
+    assert profile.summary == ""
+    assert profile.raw_payload["industry"] == ""
+    assert profile.raw_payload["job_company_name"] == ""
+    assert profile.raw_payload["location_country"] == ""
+    assert list(profile.skills.order_by("name").values_list("name", flat=True)) == [
+        "leadership",
+        "united states",
+    ]
+    assert "semantic_warnings" in output
+
+
+def test_ambiguous_structural_layout_is_quarantined(monkeypatch):
+    command = Command()
+    monkeypatch.setattr(
+        command,
+        "_layout_has_required_shape",
+        lambda row, layout: layout.name in {"reordered-block-39", "reordered-block-40"},
+    )
+    monkeypatch.setattr(command, "_has_nonempty_literal_list", lambda value: True)
+
+    layout, reason = command._detect_layout(make_row())
+
+    assert layout is None
+    assert reason == "STRUCTURAL_LAYOUT_AMBIGUOUS"
 
 
 @pytest.mark.django_db

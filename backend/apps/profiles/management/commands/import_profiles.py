@@ -97,6 +97,58 @@ EXPECTED_HEADER = (
 NULL_TOKENS = {"", "null", "none", "nan", "n/a", "na"}
 USERNAME_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,254}\Z")
 DATE_RE = re.compile(r"\A(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?\Z")
+COMPANY_SIZE_RE = re.compile(r"\A\d+\s*-\s*\d+\Z")
+NUMBER_RE = re.compile(r"\A\d+(?:\.\d+)?\Z")
+
+
+@dataclass(frozen=True)
+class SourceLayout:
+    name: str
+    canonical_to_source: tuple[int | None, ...]
+
+    @property
+    def unmapped_source_positions(self) -> tuple[int, ...]:
+        mapped = {position for position in self.canonical_to_source if position is not None}
+        return tuple(position for position in range(len(EXPECTED_HEADER)) if position not in mapped)
+
+
+def _source_layout(name: str, source_order: list[int | None]) -> SourceLayout:
+    canonical_to_source: list[int | None] = [None] * len(EXPECTED_HEADER)
+    for source_position, canonical_position in enumerate(source_order):
+        if canonical_position is None or canonical_to_source[canonical_position] is not None:
+            continue
+        canonical_to_source[canonical_position] = source_position
+    return SourceLayout(name, tuple(canonical_to_source))
+
+
+def _reordered_block_layout(block_start: int) -> SourceLayout:
+    source_order = (
+        list(range(0, block_start - 1))
+        + [44]
+        + list(range(45, 59))
+        + list(range(block_start - 1, 44))
+        + list(range(59, 77))
+    )
+    return _source_layout(f"reordered-block-{block_start}", source_order)
+
+
+SOURCE_LAYOUTS = (
+    _source_layout(
+        "legacy-facebook-appended-77",
+        list(range(0, 7)) + list(range(10, 77)) + list(range(7, 10)),
+    ),
+    *(_reordered_block_layout(start) for start in (25, 28, 39, 40, 41, 44, 45)),
+    _source_layout(
+        "reordered-block-46",
+        list(range(0, 44)) + [None] + [44] + list(range(45, 59)) + list(range(59, 76)),
+    ),
+    _source_layout(
+        "reordered-block-48",
+        list(range(0, 44)) + [None, None, None] + [44] + list(range(45, 59)) + list(range(59, 74)),
+    ),
+)
+
+LAYOUT_BY_NAME = {layout.name: layout for layout in SOURCE_LAYOUTS}
 
 
 @dataclass
@@ -119,6 +171,10 @@ class ImportStats:
     skipped_education_items: int = 0
     invalid_dates: int = 0
     oversized_fields: Counter[str] = field(default_factory=Counter)
+    detected_layouts: Counter[str] = field(default_factory=Counter)
+    layout_ambiguous_records: int = 0
+    unknown_layout_records: int = 0
+    semantic_warnings: Counter[str] = field(default_factory=Counter)
     profiles_created: int = 0
     profiles_updated: int = 0
     profiles_unchanged: int = 0
@@ -285,7 +341,7 @@ def literal_value(value: object) -> tuple[object | None, bool]:
 
 
 class Command(BaseCommand):
-    help = "Import LinkedIn profile records from the exact 77-column CSV contract."
+    help = "Import LinkedIn profile records from the private 77-column CSV dataset."
 
     def add_arguments(self, parser) -> None:
         parser.add_argument("--path", required=True, type=Path)
@@ -331,9 +387,18 @@ class Command(BaseCommand):
                 )
                 continue
             stats.exact_width_records += 1
-            raw_payload = dict(zip(header, row, strict=False))
+            layout, reason = self._detect_layout(row)
+            if layout is None:
+                if reason == "STRUCTURAL_LAYOUT_AMBIGUOUS":
+                    stats.layout_ambiguous_records += 1
+                else:
+                    stats.unknown_layout_records += 1
+                stats.quarantine.append((logical_record, physical_start, physical_end, reason))
+                continue
+            stats.detected_layouts[layout.name] += 1
+            raw_payload = self._map_raw_payload(row, layout)
             candidate = self._validate_row(
-                row, header, raw_payload, stats, logical_record, physical_start, physical_end
+                row, layout, raw_payload, stats, logical_record, physical_start, physical_end
             )
             if candidate is None:
                 stats.quarantine.append(
@@ -344,10 +409,149 @@ class Command(BaseCommand):
         stats.accepted_profile_rows = len(candidates)
         return candidates
 
+    def _detect_layout(self, row) -> tuple[SourceLayout | None, str]:
+        matches: list[tuple[SourceLayout, int]] = []
+        for layout in SOURCE_LAYOUTS:
+            if not self._layout_has_required_shape(row, layout):
+                continue
+            strong_fields = sum(
+                self._has_nonempty_literal_list(self._mapped(row, layout, name))
+                for name in ("skills", "experience", "education", "profiles")
+            )
+            matches.append((layout, strong_fields))
+        if not matches:
+            return None, "STRUCTURAL_LAYOUT"
+        strongest = max(score for _, score in matches)
+        if strongest == 0:
+            header_layout = LAYOUT_BY_NAME["reordered-block-45"]
+            if any(layout == header_layout for layout, _ in matches):
+                return header_layout, ""
+            if len(matches) == 1:
+                return matches[0][0], ""
+            return None, "STRUCTURAL_LAYOUT_AMBIGUOUS"
+        best = [layout for layout, score in matches if score == strongest]
+        if len(best) != 1:
+            return None, "STRUCTURAL_LAYOUT_AMBIGUOUS"
+        return best[0], ""
+
+    def _layout_has_required_shape(self, row, layout: SourceLayout) -> bool:
+        try:
+            identity_values = {
+                name: self._mapped(row, layout, name)
+                for name in ("linkedin_id", "linkedin_username", "linkedin_url")
+            }
+            if not any(
+                canonicalizer(identity_values[name]) is not None
+                for name, canonicalizer in (
+                    ("linkedin_id", canonical_id),
+                    ("linkedin_username", canonical_username),
+                    ("linkedin_url", canonical_url),
+                )
+            ):
+                return False
+            for name in ("full_name", "first_name", "last_name"):
+                value = identity_values.get(name) or self._mapped(row, layout, name)
+                if is_null(value) or not isinstance(value, str) or is_structured_text(value):
+                    return False
+            if layout.name != "reordered-block-45":
+                if not self._valid_skills_structure(self._mapped(row, layout, "skills")):
+                    return False
+                if not self._valid_nested_structure(
+                    self._mapped(row, layout, "experience"), "experience"
+                ):
+                    return False
+                if not self._valid_nested_structure(
+                    self._mapped(row, layout, "education"), "education"
+                ):
+                    return False
+            else:
+                for name in ("skills", "experience", "education"):
+                    value = self._mapped(row, layout, name)
+                    if is_null(value):
+                        continue
+                    parsed, valid_literal = literal_value(value)
+                    if not valid_literal:
+                        continue
+                    if name == "skills" and not self._valid_skills_structure(value):
+                        return False
+                    if name == "experience" and not self._valid_nested_structure(value, name):
+                        return False
+                    if name == "education" and not self._valid_nested_structure(value, name):
+                        return False
+            summary = self._mapped(row, layout, "summary")
+            if (
+                layout.name != "reordered-block-45"
+                and not is_null(summary)
+                and (not isinstance(summary, str) or is_structured_text(summary))
+            ):
+                return False
+        except (IndexError, TypeError):
+            return False
+        return True
+
+    @classmethod
+    def _valid_skills_structure(cls, value) -> bool:
+        if is_null(value):
+            return True
+        parsed = cls._literal_list(value)
+        return parsed is not None and (not parsed or any(isinstance(item, str) for item in parsed))
+
+    @classmethod
+    def _valid_nested_structure(cls, value, kind: str) -> bool:
+        if is_null(value):
+            return True
+        parsed = cls._literal_list(value)
+        if parsed is None or not parsed:
+            return parsed == []
+        required_keys = {"title", "company"} if kind == "experience" else {"school"}
+        return any(isinstance(item, dict) and required_keys.issubset(item) for item in parsed)
+
+    @staticmethod
+    def _literal_list(value):
+        parsed, valid_literal = literal_value(value)
+        return parsed if valid_literal and isinstance(parsed, list) else None
+
+    @classmethod
+    def _has_nonempty_literal_list(cls, value) -> bool:
+        parsed = cls._literal_list(value)
+        return parsed is not None and bool(parsed)
+
+    @staticmethod
+    def _mapped(row, layout: SourceLayout, canonical_name: str):
+        canonical_position = EXPECTED_HEADER.index(canonical_name)
+        source_position = layout.canonical_to_source[canonical_position]
+        if source_position is None:
+            return None
+        return row[source_position]
+
+    def _map_raw_payload(self, row, layout: SourceLayout) -> dict[str, object]:
+        payload = {
+            name: row[source_position]
+            for name, source_position in zip(
+                EXPECTED_HEADER, layout.canonical_to_source, strict=False
+            )
+            if source_position is not None
+        }
+        unmapped = {
+            str(source_position): row[source_position]
+            for source_position in layout.unmapped_source_positions
+            if row[source_position]
+        }
+        if unmapped:
+            payload["_unmapped_source_values"] = unmapped
+        payload["_source_layout"] = layout.name
+        return payload
+
     def _validate_row(
-        self, row, header, raw_payload, stats, logical_record, physical_start, physical_end
+        self, row, layout, raw_payload, stats, logical_record, physical_start, physical_end
     ) -> ValidatedRow | None:
-        source = dict(zip(header, row, strict=False))
+        source = {
+            name: row[source_position]
+            for name, source_position in zip(
+                EXPECTED_HEADER, layout.canonical_to_source, strict=False
+            )
+            if source_position is not None
+        }
         aliases: dict[str, str] = {}
         fields: dict[str, FieldValue] = {}
         for name, canonicalizer in (
@@ -378,7 +582,7 @@ class Command(BaseCommand):
             ("location_name", "location", 255),
             ("summary", "summary", None),
         ):
-            fields[model_name] = self._scalar_field(
+            fields[model_name] = self._semantic_scalar_field(
                 source[source_name], source_name, max_length, stats
             )
         if not any(
@@ -387,6 +591,7 @@ class Command(BaseCommand):
         ):
             stats.display_name_invalid_records += 1
             return None
+        self._sanitize_metadata(raw_payload, stats)
         return ValidatedRow(
             fields=fields,
             aliases=aliases,
@@ -413,6 +618,50 @@ class Command(BaseCommand):
             stats.oversized_fields[source_name] += 1
             return FieldValue("invalid")
         return FieldValue("value", value)
+
+    def _semantic_scalar_field(self, raw_value, source_name, max_length, stats) -> FieldValue:
+        field = self._scalar_field(raw_value, source_name, max_length, stats)
+        if field.state == "value" and self._semantic_boundary_violation(source_name, field.value):
+            stats.invalid_scalar_fields[source_name] += 1
+            stats.semantic_warnings[f"{source_name}_boundary"] += 1
+            return FieldValue("invalid")
+        return field
+
+    @staticmethod
+    def _looks_like_date(value: str) -> bool:
+        _, valid = source_date(value, end=False)
+        return valid
+
+    @staticmethod
+    def _looks_like_salary_range(value: str) -> bool:
+        parts = re.split(r"\s+-\s+", value)
+        if len(parts) != 2 or not all(re.search(r"\d", part) for part in parts):
+            return False
+        return bool(re.search(r"[$€£]|\b(?:usd|eur|gbp|k|m)\b", value, re.IGNORECASE))
+
+    @classmethod
+    def _semantic_boundary_violation(cls, field_name: str, value: str) -> bool:
+        if is_structured_text(value):
+            return True
+        if field_name in {"job_title", "industry", "location_country", "job_company_name"}:
+            if COMPANY_SIZE_RE.fullmatch(value) or cls._looks_like_date(value):
+                return True
+            if cls._looks_like_salary_range(value):
+                return True
+        return field_name == "job_company_name" and bool(NUMBER_RE.fullmatch(value))
+
+    def _sanitize_metadata(self, raw_payload, stats) -> None:
+        invalid_values = {}
+        for field_name in ("industry", "job_company_name", "location_country"):
+            value = raw_payload.get(field_name)
+            if not isinstance(value, str) or is_null(value):
+                continue
+            if self._semantic_boundary_violation(field_name, value):
+                invalid_values[field_name] = value
+                raw_payload[field_name] = ""
+                stats.semantic_warnings[f"{field_name}_boundary"] += 1
+        if invalid_values:
+            raw_payload["_invalid_source_values"] = invalid_values
 
     def _validate_skills(self, raw_value, stats) -> FieldValue:
         if is_null(raw_value):
@@ -808,6 +1057,8 @@ class Command(BaseCommand):
             "logical_records",
             "exact_width_records",
             "malformed_width_records",
+            "unknown_layout_records",
+            "layout_ambiguous_records",
             "identity_invalid_records",
             "identity_conflict_records",
             "display_name_invalid_records",
@@ -818,6 +1069,7 @@ class Command(BaseCommand):
             self.stdout.write(f"  {name}: {getattr(stats, name)}")
         self.stdout.write("Fields:")
         for name in (
+            "detected_layouts",
             "invalid_scalar_fields",
             "invalid_skills_fields",
             "skipped_skill_items",
@@ -827,6 +1079,7 @@ class Command(BaseCommand):
             "skipped_education_items",
             "invalid_dates",
             "oversized_fields",
+            "semantic_warnings",
         ):
             value = getattr(stats, name)
             rendered = dict(sorted(value.items())) if isinstance(value, Counter) else value
