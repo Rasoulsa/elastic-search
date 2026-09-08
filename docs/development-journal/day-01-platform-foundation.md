@@ -76,7 +76,7 @@ frontend dependencies.
 - README and supporting documentation now describe only the implemented Day 1 scope and the
   planned Day 2 interfaces.
 
-## Intentionally deferred features
+## Intentionally deferred features at the Day 1 checkpoint
 
 JWT authentication, dataset parsing and import, Elasticsearch clients and mappings, explicit index
 rebuilding, the search API, protected API access, and the complete profile search UI remain

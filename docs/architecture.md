@@ -4,8 +4,9 @@
 
 This repository is the platform foundation for a LinkedIn profile search application. It includes
 an explicit, repeatable CSV importer, JWT authentication with public API documentation, an
-explicitly rebuildable Elasticsearch profile index, an authenticated search API, and an
-authenticated PostgreSQL profile-detail API. The React search UI is deferred to Day 3.
+explicitly rebuildable Elasticsearch profile index, an authenticated search API, an authenticated
+PostgreSQL profile-detail API, and a React frontend for authentication, URL-driven search, facets,
+pagination, and profile detail.
 
 ## Application architecture
 
@@ -25,10 +26,11 @@ flowchart LR
 
 ## Current service responsibilities
 
-- `frontend` runs the React, TypeScript, and Vite application shell.
+- `frontend` runs the React, TypeScript, and Vite application shell, authentication routes,
+  protected search, and protected profile detail.
 - `backend` runs Django and Django REST Framework, including health, JWT authentication,
   OpenAPI/Swagger documentation, Elasticsearch profile search, and PostgreSQL profile detail.
-- `db` runs PostgreSQL 16, where application profile data will be canonical.
+- `db` runs PostgreSQL 16, where application profile data is canonical.
 - `elasticsearch` runs Elasticsearch 8.17 and stores the derived `linkedin_profiles_v1` index.
   Django integrates through one small gateway for index lifecycle, bulk operations, and search.
 
@@ -75,6 +77,23 @@ detail reads the canonical PostgreSQL models with bounded relation prefetching.
 - `GET /api/schema/` serves the OpenAPI schema and `GET /api/docs/` serves Swagger UI. CORS allows
   only the origins listed in `CORS_ALLOWED_ORIGINS`; credentials are disabled.
 
+The frontend keeps the access token in memory and normally keeps the refresh token in `sessionStorage`;
+an in-memory refresh fallback is used only when storage is unavailable. On startup, the authentication
+provider performs one refresh when a refresh token exists and then loads `/api/v1/auth/me/`; protected
+content remains hidden until this resolves. Protected API calls share one in-flight refresh after a
+401, while abort and retry behavior remains scoped to each original caller. Session generations and
+idempotent expiry cleanup prevent late responses or concurrent 401s from restoring or repeatedly
+clearing a session. Logout is client-side because the backend has no logout endpoint: it removes local
+tokens but does not revoke already-issued JWTs, which remain valid server-side until expiration.
+Production deployments should prefer secure HttpOnly cookies and server-side revocation; both are
+outside the current backend contract. See `docs/frontend-auth.md` for the complete frontend flow.
+
+The frontend treats canonical `/search` query parameters as the source of search state. Draft form
+controls write normalized criteria to the URL only on submission; TanStack Query keys and protected
+requests derive from that URL. Runtime guards validate the allowlisted search and detail response
+structures before rendering. Result links carry a validated local `/search` return destination to
+the PostgreSQL-backed detail page. See `docs/frontend-search.md` for the complete browser contract.
+
 ## Docker Compose topology
 
 Compose runs `db`, `elasticsearch`, `backend`, and `frontend`. The backend uses the Compose service
@@ -89,14 +108,29 @@ requests require Elasticsearch. PostgreSQL and Elasticsearch data use named volu
 python manage.py import_profiles --path /data/profiles.txt
 ```
 
-The importer requires the exact 77-column CSV header, skips malformed-width records without repair,
-and reports logical/physical row ranges using reason codes. It parses and normalizes every accepted
-row before consolidating duplicates through all canonical aliases. Only then does one transaction
-persist one final plan per profile. Tri-state values distinguish valid values, explicit empties, and
-invalid input. Complete valid nested lists synchronize source positions and remove stale rows;
-partial lists preserve invalid/unmatched positions, while invalid top-level collections are kept
-unchanged. Diff-aware writes preserve unchanged profile timestamps and retained child primary keys.
-Database counters report actual creates, updates, unchanged rows, and deletes.
+The importer requires the exact 77-column CSV header as canonical vocabulary, then detects each
+exact-width row against one of ten structural collection-block contracts. Header and width alone are
+not alignment evidence. The second Day 3 investigation proved that rows sharing a collection-block
+start do not necessarily share scalar positions, so the importer no longer invents a complete
+permutation for those positions. Identity uses the stable source prefix; skills, experience,
+education, summary, and location lists use their structural block; current job/company fields use
+explicit keys in the primary/first experience object. Ties, unsupported structures, repeated
+headers, and malformed widths are quarantined.
+
+After canonicalization, semantic boundary validation prevents serialized collections, numeric/date
+values, phone shapes, salary ranges, and company-size ranges from crossing into incompatible scalar
+fields. This uses structural rules rather than broad dictionaries. The original row remains private
+under positional `raw_payload._source_values`; the strict importer-owned `_importer` namespace
+records only supported mapping version, layout, selected source order, and allowlisted canonical
+paths. A mapping-version marker permits one bounded cleanup of scalar and skill state written by the
+known broken mapper while ordinary invalid updates continue to preserve valid existing values.
+
+The importer then parses, normalizes, and consolidates duplicates through all canonical aliases before
+one transaction persists one final plan per profile. Complete valid nested lists synchronize source
+positions and remove stale rows; partial lists preserve invalid/unmatched positions, while invalid
+top-level collections are kept unchanged. Diff-aware writes preserve unchanged profile timestamps and
+retained child primary keys. Database and layout counters report actual creates, updates, unchanged
+rows, deletes, quarantine reasons, and field-level warnings.
 
 ## Search-index boundary
 
@@ -118,9 +152,11 @@ transport, missing-index, and malformed-response failures become the stable `sea
 `GET /api/v1/profiles/{id}/` does not pass through this boundary. It selects the profile from
 PostgreSQL and prefetches skills, experiences, and education in three deterministic queries. It
 therefore remains operational during an Elasticsearch outage and excludes the raw import payload
-and importer bookkeeping from serialization. Its scalar company, industry, and country values are
-explicitly allowlisted from imported payload keys because dedicated relational columns do not yet
-exist; arbitrary nested payload values and contact fields are never exposed.
+and importer bookkeeping from serialization. Search and detail projections use scalar company,
+industry, and country payload keys only when the strict `_importer` contract proves that importer
+canonicalization produced them. Both boundaries independently apply structural validation to model,
+relation, and allowlisted metadata values; arbitrary raw positions, rejected values, and contact
+fields are never exposed or indexed.
 
 No Django signals or application-startup hooks synchronize profile writes. This keeps PostgreSQL
 writes independent from Elasticsearch and makes index state explicitly reproducible and observable.
@@ -129,6 +165,6 @@ available when Elasticsearch is stopped. The readiness endpoint therefore remain
 
 ## Intentionally deferred
 
-The React authentication and profile-search UI are deferred to Day 3. Zero-downtime alias rotation,
-incremental synchronization, autocomplete, fuzzy or semantic search, and saved searches remain
-intentionally outside the assignment-sized scope.
+Zero-downtime alias rotation, incremental synchronization, autocomplete, fuzzy or semantic search,
+saved searches, profile editing, and administrative UI remain intentionally outside the
+assignment-sized scope.

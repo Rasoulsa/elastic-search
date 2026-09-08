@@ -11,8 +11,8 @@ Elasticsearch contains a derived, explicitly rebuildable profile index.
 - pytest, Ruff, Vitest, React Testing Library, and ESLint
 
 The Day 2 backend includes JWT authentication, API documentation, dataset import, Elasticsearch
-index lifecycle, authenticated profile search, and PostgreSQL profile detail. The React search UI
-remains deferred to Day 3.
+index lifecycle, authenticated profile search, and PostgreSQL profile detail. The Day 3 frontend
+includes authentication, URL-driven profile search and facets, pagination, and profile detail.
 
 ## Run locally
 
@@ -47,6 +47,13 @@ The frontend is available at `http://localhost:5173`; the backend is available a
 - `GET /api/v1/profiles/{id}/` for authenticated PostgreSQL-backed profile detail
 - `GET /api/schema/` and `GET /api/docs/` for the public OpenAPI schema and Swagger UI
 
+Set `VITE_API_BASE_URL` to the backend origin used by the browser. It defaults to
+`http://localhost:8000` in the example and Compose configuration. The frontend routes are `/login`,
+`/register`, protected `/search`, and protected `/profiles/:profileId`. See
+[`docs/frontend-auth.md`](docs/frontend-auth.md) for the client authentication lifecycle and token
+storage policy, and [`docs/frontend-search.md`](docs/frontend-search.md) for the browser search
+contract.
+
 The readiness endpoint runs a small PostgreSQL connectivity query. It does not check migration
 status or Elasticsearch, and it does not expose database exception details.
 
@@ -76,10 +83,16 @@ make import
 ```
 
 This runs `python manage.py import_profiles --path /data/profiles.txt` in the backend container.
-The importer parses, normalizes, consolidates duplicate aliases, and then writes one diff-aware
-import plan per profile to PostgreSQL. A repeated unchanged import produces zero profile/child
-creates, updates, or deletes while preserving profile, child, and skill-link primary keys. Profiles
-migration `0003` is the latest schema migration.
+The importer detects ten named structured-block layouts before it parses, normalizes, consolidates
+duplicate aliases, and writes one diff-aware plan per profile to PostgreSQL. Width or block start
+alone is not treated as complete scalar alignment. Canonical job/company fields come from explicitly
+keyed experience data; profile location/country come from explicitly named lists; ambiguous source
+positions remain private positional data. Malformed widths, repeated headers, and ambiguous layouts
+are quarantined with sanitized reason codes. Shared semantic boundaries reject displaced collections,
+phones, numeric/date values, and ranges. A repeated corrected import produces zero creates, updates,
+or deletes while preserving valid profile, child, and skill-link primary keys. Rebuild Elasticsearch
+explicitly with `make rebuild-index` after correction. Profiles migration `0003` remains current;
+this data correction requires no schema migration.
 
 Create the empty versioned Elasticsearch index or rebuild it completely from PostgreSQL with:
 

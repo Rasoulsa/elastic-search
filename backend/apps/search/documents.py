@@ -1,8 +1,8 @@
 import unicodedata
 
 from apps.profiles.models import Profile
-
-NULL_METADATA_VALUES = {"", "null", "none", "nan", "n/a", "na"}
+from apps.profiles.provenance import validated_metadata_text
+from apps.profiles.semantic_values import validated_scalar
 
 
 def profile_document_id(profile: Profile) -> str:
@@ -17,9 +17,8 @@ def _text(value: object) -> str:
     return " ".join(unicodedata.normalize("NFKC", value).split())
 
 
-def _metadata_text(value: object) -> str:
-    normalized = _text(value)
-    return "" if normalized.casefold() in NULL_METADATA_VALUES else normalized
+def _canonical_metadata(metadata: dict, key: str, destination: str | None = None) -> str:
+    return validated_metadata_text(metadata, key, destination)
 
 
 def _deduplication_key(value: str) -> str:
@@ -53,10 +52,10 @@ def _experience_line(experience) -> str:
     return " | ".join(
         value
         for value in (
-            _text(experience.title),
-            _text(experience.company),
-            _text(experience.location),
-            _text(experience.description),
+            validated_scalar("job_title", experience.title),
+            validated_scalar("job_company_name", experience.company),
+            validated_scalar("location_name", experience.location),
+            validated_scalar("summary", experience.description),
         )
         if value
     )
@@ -89,17 +88,23 @@ def project_profile(profile: Profile) -> dict:
     )
 
     metadata = profile.raw_payload if isinstance(profile.raw_payload, dict) else {}
-    current_experience = next(
-        (experience for experience in experiences if experience.ended_at is None),
-        experiences[0] if experiences else None,
+    current_title = _canonical_metadata(metadata, "job_title")
+    current_company = _canonical_metadata(metadata, "job_company_name")
+    job_titles = _unique(
+        [
+            current_title,
+            *(validated_scalar("job_title", experience.title) for experience in experiences),
+        ]
     )
-    headline = _text(profile.headline)
-    current_title = headline or (_text(current_experience.title) if current_experience else "")
-    current_company = _metadata_text(metadata.get("job_company_name")) or (
-        _text(current_experience.company) if current_experience else ""
+    companies = _unique(
+        [
+            current_company,
+            *(
+                validated_scalar("job_company_name", experience.company)
+                for experience in experiences
+            ),
+        ]
     )
-    job_titles = _unique([current_title, *(experience.title for experience in experiences)])
-    companies = _unique([current_company, *(experience.company for experience in experiences)])
 
     full_name = _text(profile.full_name) or _text(f"{profile.first_name} {profile.last_name}")
 
@@ -109,12 +114,12 @@ def project_profile(profile: Profile) -> dict:
         "job_title": current_title,
         "job_titles": job_titles,
         "skills": skills,
-        "industry": _metadata_text(metadata.get("industry"))
-        or _metadata_text(metadata.get("job_company_industry")),
-        "location_name": _text(profile.location),
-        "country": _metadata_text(metadata.get("location_country")),
+        "industry": _canonical_metadata(metadata, "industry")
+        or _canonical_metadata(metadata, "job_company_industry", "industry"),
+        "location_name": _canonical_metadata(metadata, "location_name"),
+        "country": _canonical_metadata(metadata, "location_country"),
         "company": companies,
-        "summary": _text(profile.summary),
+        "summary": _canonical_metadata(metadata, "summary"),
         "experience_text": _unique(_experience_line(item) for item in experiences),
         "education_text": _unique(_education_line(item) for item in educations),
     }

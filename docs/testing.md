@@ -78,8 +78,10 @@ docker compose config -q
 docker compose run --rm backend python manage.py spectacular --validate
 ```
 
-Run the mounted private dataset twice for operational verification. The importer prints counts and
-row-range reason codes only; it never prints source records or profile values:
+Back up the PostgreSQL database or volume before correcting local imported state. Do not reset or
+delete the named volumes for this check. Run the mounted private dataset twice for operational
+verification. The importer prints counts and row-range reason codes only; it never prints source
+records or profile values:
 
 ```bash
 make migrate
@@ -89,9 +91,44 @@ make rebuild-index
 make rebuild-index
 ```
 
-Do not encode the private dataset's observed counts as automated test expectations. Synthetic tests
-cover parsing, normalization, duplicate consolidation, identity conflict handling, tri-state scalar
-and collection updates, skills policy, rollback behavior, and database-change counters.
+The second Day 3 mapping investigation first imported into a clean isolated SQLite database. Corrected
+verification observed 336 logical records, 283 exact-width records, 53 `STRUCTURAL_WIDTH`
+quarantines, one `STRUCTURAL_REPEATED_HEADER`, 282 accepted rows, 35 duplicates, and 247 unique real
+profiles. The final isolated second import reported 247 unchanged profiles, 1,775 unchanged
+experiences, 707 unchanged education rows, and zero creates, updates, or deletes. Do not encode these
+private dataset counts as automated test expectations.
+
+Final live `canonical-v2` verification completed for PostgreSQL and Elasticsearch. The first import
+found 247 unique profiles: 230 were updated to the latest provenance contract, 17 were unchanged,
+and zero were created or deleted. It quarantined one repeated header and 53 malformed-width records;
+unknown and ambiguous layout counts were both zero. Three summary-boundary warnings caused invalid
+summaries to be omitted safely rather than mapped from unrelated fields.
+
+The second import left all 247 profiles unchanged, with zero creates, updates, or deletes; all 1,775
+experiences and 707 education records were unchanged. Both explicit Elasticsearch rebuilds reported
+`attempted=247 indexed=247 failed=0 unprocessed=0`, and the index count remained 247. Final human
+browser acceptance then completed at desktop, approximately 768px, and approximately 375px widths;
+authenticated rendering, corrected facets/results, simultaneous filters, URL persistence, pagination,
+reload, Back/Forward, detail/return navigation, Elasticsearch outage/recovery, logout, no horizontal
+overflow, and no console errors were confirmed. Older screenshots that exposed corruption do not
+satisfy that final check.
+
+Synthetic tests cover all ten layout contracts, scalar extraction from keyed collections, canonical
+raw-payload provenance, repeated-header quarantine, malformed/ambiguous layouts, semantic anomaly
+classes, normal tri-state preservation versus provenance-aware cleanup, bounded orphan-skill cleanup,
+full persisted-state idempotency, stable timestamps/IDs, projection fallback rejection, privacy-safe
+output, rollback behavior, and truthful counters.
+
+Provenance tests independently enumerate each canonical field's permitted parsed path. Equality is
+necessary but cannot authorize a path from another field. Tests reject cross-wired paths, malformed
+indices and traversal-like syntax, wrong destination types, unknown fields, and any current-experience
+index that disagrees with importer metadata or the shared selection policy. These failures omit the
+optional projection/detail field and do not expose raw values, provenance metadata, or exception
+details.
+
+This defect was discovered during Day 3 browser acceptance. The safe sequence is backup, corrected
+PostgreSQL import, second-run idempotency check, two explicit Elasticsearch rebuilds, sanitized
+count/ID/facet checks, and then browser acceptance again.
 
 For manual index verification, compare the canonical and derived counts without printing documents:
 
@@ -101,9 +138,11 @@ curl --fail http://localhost:9200/linkedin_profiles_v1/_count
 curl --fail http://localhost:9200/linkedin_profiles_v1/_mapping
 ```
 
-Run `make rebuild-index` twice and confirm the count is unchanged. For structural inspection, request
-one document with an explicit safe `_source` allowlist such as `profile_id,full_name,job_title`; do
-not print the complete source document from the private dataset.
+Run `make rebuild-index` twice and confirm both runs report the current PostgreSQL profile count with
+`failed=0 unprocessed=0`, the count is unchanged, and sanitized document-ID sets match PostgreSQL. For
+structural inspection, request only aggregate/facet data or an explicit safe `_source` allowlist;
+do not print complete documents, raw payloads, contacts, summaries, or profile identities from the
+private dataset.
 
 The migration suite uses historical models from Django's migration app registry. It exercises a
 fresh profiles schema from zero through the latest migration (`0003`) and upgrades an initial `0001`
@@ -128,6 +167,58 @@ docker compose run --rm frontend npm run build
 ```
 
 The explicit type-check uses the repository's TypeScript project references with `tsc -b`.
+
+The focused authentication suite can be run with:
+
+```bash
+docker compose run --rm frontend npm test -- --run \
+  src/api/client.test.ts src/authentication.test.tsx
+```
+
+These tests mock `fetch` at the network boundary while retaining the real router, authentication
+provider, TanStack Query client, and browser `sessionStorage`. They cover route guards and loading,
+login and registration behavior, token placement, startup refresh plus `/me/`, protected request
+headers, one-refresh/one-retry behavior, shared concurrent refresh, safe malformed errors, logout
+cache clearing, and late refresh or `/me/` responses after logout.
+
+The focused frontend search suites can be run with:
+
+```bash
+docker compose run --rm frontend npm test -- --run \
+  src/search/searchState.test.ts \
+  src/api/profiles.test.ts \
+  src/pages/SearchPage.test.tsx \
+  src/pages/ProfileDetailPage.test.tsx
+```
+
+The URL utility tests cover deterministic ordering, repeated filters, blank removal, the bounded
+Unicode comparison policy, unknown-parameter removal, pagination normalization, criteria/page
+transitions, and token-free query keys. API tests exercise runtime validation for all important
+search, facet, result, detail, experience, and education structures, including pagination arithmetic,
+request/response pagination consistency, legitimate out-of-range responses, exact repeated-parameter
+URLs, profile IDs, abort-signal forwarding, and a sanitized live-shaped match-all response with blank
+facet values.
+
+Page integration tests retain the real router, authentication provider and guards, QueryClient, and
+session lifecycle. They mock only the typed profile API boundary and the narrow startup authentication
+requests. Search coverage includes initial match-all, restored URLs, explicit keyword/filter
+submission, all filter categories, repeated skills and job titles, clear, navigation restoration,
+facets and counts, selected values absent from facets, safe result rendering, count pluralization,
+loading, empty/error/retry states, pagination, simultaneous same-category and cross-category
+selection, preserved return URLs, and token-free cache keys.
+Detail coverage includes loading, public and nested rendering, `404`, network/server/malformed errors,
+bounded retry boundaries, safe and unsafe external URLs, return validation, malformed IDs, abort
+handling, and exclusion of internal fields. Authentication coverage verifies that logout removes
+actual search and profile-detail query entries and does not expose them to a later session.
+
+Search page coverage also verifies delayed superseded requests, per-request abort signals, safe
+out-of-range correction with criteria preservation, no invalid page flash, and correction-loop
+termination.
+
+For sanitized browser verification, use a synthetic local account and inspect only route changes,
+status messages, and the presence or absence of storage keys. Do not copy token values into notes,
+URLs, console output, screenshots, or documentation. Verify that reload uses the refresh token to
+recover `/me/`, and that closing the tab or browser session removes the `sessionStorage` session.
 
 ## Compose and health checks
 

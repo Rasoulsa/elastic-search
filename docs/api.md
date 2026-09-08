@@ -6,6 +6,11 @@ The local backend base URL is `http://localhost:8000`. API routes use the `/api/
 
 ## Authentication
 
+The browser client reads the backend origin from `VITE_API_BASE_URL`. Public registration and token
+requests do not include an `Authorization` header. The current-user request and future protected
+profile requests use the in-memory access token. A protected 401 can trigger one shared refresh and
+one retry; the refresh endpoint never refreshes itself recursively.
+
 ### Register
 
 `POST /api/v1/auth/register/` is public and creates a Django user. It does not issue tokens.
@@ -97,6 +102,11 @@ Response (`200 OK`):
 }
 ```
 
+The current frontend logout has no corresponding backend endpoint. It removes the memory-only access
+token, the normally `sessionStorage`-backed refresh token, current-user state, and authenticated query
+cache. Logout does not revoke already-issued JWTs; previously issued access and refresh JWTs remain
+valid server-side until expiration.
+
 ## Public and protected routes
 
 Public routes are:
@@ -162,7 +172,7 @@ Response (`200 OK`):
 
 ```json
 {
-  "count": 248,
+  "count": 247,
   "page": 1,
   "page_size": 20,
   "total_pages": 13,
@@ -207,6 +217,11 @@ Unavailable`):
 
 There is no PostgreSQL fallback and no internal hostname, index name, exception, or query in the
 response.
+
+The browser client represents filters with the same repeated parameters and sends explicit scalar
+`page` and `page_size` values. Its canonical URL omits default pagination, removes unknown
+parameters, and never includes authentication tokens. Successful payloads are runtime-checked before
+any results or facets render; malformed successes become stable recoverable client errors.
 
 ## Profile detail
 
@@ -265,6 +280,11 @@ Response (`200 OK`):
 
 Unknown IDs return `404 Not Found`. The importer-owned canonical `public_identifier`, `raw_payload`,
 private source fields, timestamps, source ordering, and authentication data are excluded.
+
+The browser detail route is `/profiles/:profileId`. It rejects malformed IDs before requesting this
+endpoint, validates successful payloads, and renders only the documented public fields. Search links
+carry a validated local `/search` return URL; this frontend-only `return_to` parameter is never sent
+to the backend detail endpoint.
 
 ## Errors
 
