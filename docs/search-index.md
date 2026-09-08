@@ -17,9 +17,9 @@ Configuration is intentionally small:
 The Python client is constrained to Elasticsearch client 8.x, which is compatible with the Compose
 Elasticsearch 8.17 server. The dependency is restricted to the tested 8.17 minor line.
 
-Backend startup, migrations, profile imports, authentication, PostgreSQL profile detail, and ordinary
-backend tests require PostgreSQL but not a live Elasticsearch service. Explicit index commands and
-profile search require Elasticsearch.
+Backend startup, migrations, profile imports, authentication, and PostgreSQL profile detail use
+PostgreSQL but not a live Elasticsearch service. Ordinary backend tests intentionally use the
+committed SQLite test settings. Explicit index commands and profile search require Elasticsearch.
 
 After any corrected dataset import, rebuild `linkedin_profiles_v1` from PostgreSQL. The index is
 derived state and must not be used to repair source data. The second Day 3 investigation found that

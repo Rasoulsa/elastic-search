@@ -1,4 +1,17 @@
-.PHONY: setup up down migrate import create-index rebuild-index test test-backend test-frontend lint
+.PHONY: setup up down migrate import create-index rebuild-index test test-backend test-frontend lint format-check typecheck build
+
+DATASET_PATH_VALUE := $(value DATASET_PATH)
+export DATASET_PATH_VALUE
+
+ifeq ($(strip $(DATASET_PATH_VALUE)),)
+import:
+	@echo "Usage: make import DATASET_PATH=/data/profiles.txt" >&2
+	@exit 2
+else
+import:
+	@DATASET_PATH="$${DATASET_PATH_VALUE}"; export DATASET_PATH; \
+		docker compose run --rm backend python manage.py import_profiles --path "$${DATASET_PATH}"
+endif
 
 setup:
 	@test -f .env || cp .env.example .env
@@ -12,9 +25,6 @@ down:
 
 migrate:
 	docker compose run --rm backend python manage.py migrate
-
-import:
-	docker compose run --rm backend python manage.py import_profiles --path /data/profiles.txt
 
 create-index:
 	docker compose run --rm backend python manage.py create_profile_index
@@ -33,3 +43,12 @@ test-frontend:
 lint:
 	docker compose run --rm backend ruff check .
 	docker compose run --rm frontend npm run lint
+
+format-check:
+	docker compose run --rm backend ruff format --check .
+
+typecheck:
+	docker compose run --rm frontend npm run typecheck
+
+build:
+	docker compose build backend frontend

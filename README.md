@@ -64,6 +64,23 @@ profile detail remains available from PostgreSQL.
 
 Use `make down` to stop the services. Named volumes preserve PostgreSQL and Elasticsearch data.
 
+## CI/CD summary
+
+Pull requests and pushes to `main` run independent backend and frontend quality/test jobs. The
+backend tests use the committed SQLite test settings and do not use the private dataset or live
+Elasticsearch; the backend job separately validates PostgreSQL-backed Django configuration, checks,
+and migrations against PostgreSQL 16. HTTP application startup and health verification occur in the
+separate bounded Compose smoke job, which uses only synthetic values. No CI job imports data or
+deploys externally.
+
+Tags matching the broad `v*` trigger enter the release workflow. An isolated read-only validation job
+checks out the repository and immediately invokes the shared validator for strict
+`vMAJOR.MINOR.PATCH` SemVer with no leading zeros, prerelease, or build suffix, plus the required
+absolute HTTP(S) `VITE_API_BASE_URL`. The publishing job requires successful validation before login,
+image metadata, build, or publication. A valid tag normalizes `v1.2.3` to `1.2.3` for image metadata.
+No hosted release run or GHCR publication is claimed here. See
+[`docs/ci-cd.md`](docs/ci-cd.md) for configuration and job details.
+
 ## Development commands
 
 ```bash
@@ -72,6 +89,9 @@ make create-index
 make rebuild-index
 make test
 make lint
+make format-check
+make typecheck
+make build
 docker compose run --rm frontend npm run typecheck
 docker compose run --rm frontend npm run build
 ```
@@ -79,10 +99,12 @@ docker compose run --rm frontend npm run build
 Import the mounted local dataset with:
 
 ```bash
-make import
+make import DATASET_PATH=/data/profiles.txt
 ```
 
-This runs `python manage.py import_profiles --path /data/profiles.txt` in the backend container.
+`DATASET_PATH` is required, must not be empty or whitespace-only, and is passed unchanged as the
+container-visible path to `python manage.py import_profiles --path`. The Make target prints the
+same concise usage guidance and exits before invoking Docker when the path is missing.
 The importer detects ten named structured-block layouts before it parses, normalizes, consolidates
 duplicate aliases, and writes one diff-aware plan per profile to PostgreSQL. Width or block start
 alone is not treated as complete scalar alignment. Canonical job/company fields come from explicitly

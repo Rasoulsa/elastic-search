@@ -1,0 +1,116 @@
+name: Publish containers
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions: {}
+
+jobs:
+  validate:
+    name: Validate release inputs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.validate.outputs.version }}
+      major_minor: ${{ steps.validate.outputs.major_minor }}
+      api_base_url: ${{ steps.validate.outputs.api_base_url }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Validate release tag and public API URL
+        id: validate
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+        run: scripts/validate-release-inputs.sh "$RELEASE_TAG" "$RELEASE_API_BASE_URL"
+
+  publish:
+    name: Publish versioned containers
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Resolve lowercase GHCR image names
+        id: images
+        shell: bash
+        run: |
+          repository="$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          echo "backend=ghcr.io/${repository}/backend" >> "$GITHUB_OUTPUT"
+          echo "frontend=ghcr.io/${repository}/frontend" >> "$GITHUB_OUTPUT"
+
+      - name: Set release metadata
+        id: release_metadata
+        shell: bash
+        run: echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate backend image metadata
+        id: backend_metadata
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ steps.images.outputs.backend }}
+          flavor: latest=true
+          tags: |
+            type=raw,value=${{ needs.validate.outputs.version }}
+            type=raw,value=${{ needs.validate.outputs.major_minor }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.validate.outputs.version }}
+            org.opencontainers.image.created=${{ steps.release_metadata.outputs.created }}
+
+      - name: Generate frontend image metadata
+        id: frontend_metadata
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ steps.images.outputs.frontend }}
+          flavor: latest=true
+          tags: |
+            type=raw,value=${{ needs.validate.outputs.version }}
+            type=raw,value=${{ needs.validate.outputs.major_minor }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.validate.outputs.version }}
+            org.opencontainers.image.created=${{ steps.release_metadata.outputs.created }}
+
+      - name: Build and push backend image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: true
+          tags: ${{ steps.backend_metadata.outputs.tags }}
+          labels: ${{ steps.backend_metadata.outputs.labels }}
+
+      - name: Build and push frontend image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: true
+          tags: ${{ steps.frontend_metadata.outputs.tags }}
+          labels: ${{ steps.frontend_metadata.outputs.labels }}
+          build-args: |
+            VITE_API_BASE_URL=${{ needs.validate.outputs.api_base_url }}
