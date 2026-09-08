@@ -10,11 +10,11 @@ pagination, and profile detail.
 
 ## Application architecture
 
-The React and TypeScript frontend is served by Vite and is the client for the Django REST API. The
-Django backend exposes health, authentication, and API documentation endpoints and owns the
-relational user and profile data. PostgreSQL is the canonical source of truth. Elasticsearch is a
-derived search index rebuilt explicitly from PostgreSQL. Profile writes and imports do not contact
-Elasticsearch.
+The React and TypeScript frontend is served by Vite during development and by a small nginx runtime
+image in production; it is the client for the Django REST API. The Django backend exposes health,
+authentication, and API documentation endpoints and owns the relational user and profile data.
+PostgreSQL is the canonical source of truth. Elasticsearch is a derived search index rebuilt
+explicitly from PostgreSQL. Profile writes and imports do not contact Elasticsearch.
 
 ```mermaid
 flowchart LR
@@ -27,7 +27,8 @@ flowchart LR
 ## Current service responsibilities
 
 - `frontend` runs the React, TypeScript, and Vite application shell, authentication routes,
-  protected search, and protected profile detail.
+  protected search, and protected profile detail. Compose uses the Vite development target with a
+  source bind mount; release builds use the nginx production target with an SPA fallback.
 - `backend` runs Django and Django REST Framework, including health, JWT authentication,
   OpenAPI/Swagger documentation, Elasticsearch profile search, and PostgreSQL profile detail.
 - `db` runs PostgreSQL 16, where application profile data is canonical.
@@ -96,11 +97,17 @@ the PostgreSQL-backed detail page. See `docs/frontend-search.md` for the complet
 
 ## Docker Compose topology
 
-Compose runs `db`, `elasticsearch`, `backend`, and `frontend`. The backend uses the Compose service
-hostnames `db` and `elasticsearch`; the frontend calls the backend through the host-published port.
-The backend requires a healthy PostgreSQL container but has no startup dependency on Elasticsearch,
-while the frontend waits for the backend health check. Explicit indexing commands and profile search
-requests require Elasticsearch. PostgreSQL and Elasticsearch data use named volumes.
+Compose runs `db`, `elasticsearch`, `backend`, and `frontend`. The Compose frontend uses the
+development Dockerfile target and source bind mount for edit-and-refresh usability. Production
+frontend images serve the built assets from nginx and route client paths such as `/login`,
+`/register`, `/search`, and `/profiles/:id` back to `index.html`.
+
+The backend uses the Compose service hostnames `db` and `elasticsearch`; the frontend calls the
+backend through the host-published port. The backend requires a healthy PostgreSQL container but
+has no startup dependency on Elasticsearch, while the frontend waits for the backend health check.
+Explicit indexing commands and profile search requests require Elasticsearch. PostgreSQL and
+Elasticsearch data use named volumes. CI's Compose smoke test removes its temporary volumes during
+cleanup and never imports the private dataset.
 
 ## Import interface
 

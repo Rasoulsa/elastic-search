@@ -2,6 +2,73 @@
 
 Commands below assume Docker Compose is running and should be executed from the repository root.
 
+## Phase 4A focused checks
+
+Run the local release-input, workflow-wiring/order, release-workflow action-pinning, Makefile
+`DATASET_PATH`, and shell-safety assertions without creating a Git tag or publishing an image:
+
+```bash
+bash tests/ci/test_phase_4a.sh
+```
+
+The shared release validator accepts `v1.2.3`, rejects malformed, leading-zero, prerelease, and build
+suffix tags, and writes normalized `1.2.3` metadata. The release workflow invokes this same validator
+from its isolated read-only validation job before the publishing job can log in or build.
+
+The focused shell script does not test Dockerignore rules or live Nginx behavior. Dockerignore rules
+are source-reviewed and configuration-validated. Production-container probes previously verified the
+Nginx SPA routes, required security headers, and 404 responses for missing static-looking resources,
+but those behaviors are not exercised by the current focused shell script. The final read-only review
+could not rerun Docker/Nginx probes because local Docker access was unavailable, so that latest rerun
+remains unverified.
+
+Validate the production Nginx configuration and later probe the live image as follows:
+
+```bash
+docker run --rm profile-search-frontend:local nginx -t
+```
+
+The live probes should return the SPA shell for `/`, `/login`, `/register`, `/search`, and
+`/profiles/123`; return 404 for `/missing.js`, `/missing.css`, `/missing.png`, and
+`/assets/missing.js`; return 200 for `/healthz`; and include `nosniff`,
+`strict-origin-when-cross-origin`, and `DENY` security headers.
+
+## CI-equivalent local checks
+
+CI uses the repository's existing commands from the service directories. The backend quality job
+runs `ruff check .`, `ruff format --check .`, `python manage.py check`,
+`python manage.py makemigrations --check --dry-run`, and `pytest`. The committed pytest suite,
+including profile-detail tests, uses SQLite through `config.test_settings` and does not claim
+PostgreSQL test coverage. The same job separately uses PostgreSQL 16 for normal Django system
+checks, migration consistency/application checks, and migrations. The Compose smoke environment
+uses PostgreSQL for live application startup/readiness and HTTP smoke testing. No backend test or CI
+step imports `data/` or requires live Elasticsearch.
+
+The frontend job runs `npm ci`, `npm run lint`, `npm run typecheck`, `npm test -- --run`, and
+`npm run build` with `VITE_API_BASE_URL=http://localhost:8000`. These tests are network-free and do
+not require the backend, Elasticsearch, credentials, or a browser service.
+
+The exact host-side equivalents, after installing `backend/requirements.txt` and running `npm ci`
+in `frontend/`, are:
+
+```bash
+cd backend
+ruff check .
+ruff format --check .
+DJANGO_SECRET_KEY=ci-local-non-production-key python manage.py check
+DJANGO_SECRET_KEY=ci-local-non-production-key python manage.py makemigrations --check --dry-run
+DJANGO_SECRET_KEY=ci-local-non-production-key pytest
+cd ../frontend
+npm run lint
+npm run typecheck
+npm test -- --run
+VITE_API_BASE_URL=http://localhost:8000 npm run build
+```
+
+Use the Compose commands below for the PostgreSQL-backed migration and live service checks. The
+Compose frontend explicitly uses its `development` Dockerfile target; the default `docker build`
+for `frontend/Dockerfile` produces the nginx production image.
+
 ## Focused backend checks
 
 Run the health tests for the readiness behavior:
@@ -49,9 +116,9 @@ values, cross-category AND behavior, Elasticsearch-owned exact normalization, bo
 sorting, offsets, bounded facets, and the 10,000-result window. API tests issue real JWT access tokens
 and mock the Elasticsearch gateway only. They cover scalar repetition rejection, exact total-page
 arithmetic, no results, facets, metadata exclusion, controlled unavailable and missing-index
-responses, malformed gateway responses, safe optional-field defaults, and client closure. Detail tests
-use the real serializer and PostgreSQL test database, including nested data, exclusions, 404,
-Elasticsearch independence, and a bounded query count.
+responses, malformed gateway responses, safe optional-field defaults, and client closure. Profile-detail
+tests use the real serializer and the committed SQLite test database, including nested data, exclusions,
+404, Elasticsearch independence, and a bounded query count.
 
 To verify dependency isolation, stop Elasticsearch and run an ordinary backend command without
 `--no-deps`. PostgreSQL may start, but Elasticsearch must remain stopped:
@@ -85,11 +152,15 @@ records or profile values:
 
 ```bash
 make migrate
-make import
-make import
+make import DATASET_PATH=/data/profiles.txt
+make import DATASET_PATH=/data/profiles.txt
 make rebuild-index
 make rebuild-index
 ```
+
+`DATASET_PATH` is required and is treated as the path visible inside the backend container. A
+missing or whitespace-only value prints `Usage: make import DATASET_PATH=/data/profiles.txt` and
+exits before Docker is invoked.
 
 The second Day 3 mapping investigation first imported into a clean isolated SQLite database. Corrected
 verification observed 336 logical records, 283 exact-width records, 53 `STRUCTURAL_WIDTH`
